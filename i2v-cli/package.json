@@ -9,7 +9,7 @@
   },
   "scripts": {
     "start": "node bin/i2v-cli.js",
-    "test": "node --test test/"
+    "test": "node --test test/*.test.js"
   },
   "dependencies": {
     "chrome-remote-interface": "^0.33.0"
