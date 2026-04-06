@@ -1,0 +1,266 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8">
+<title>I2V 批量测试面板</title>
+<style>
+body { font-family: system-ui; font-size: 13px; background: #0a0e17; color: #c8d8ec; padding: 20px; max-width: 900px; margin: 0 auto; }
+h1 { color: #2f9cf5; font-size: 18px; }
+.card { background: #0f1520; border: 1px solid rgba(255,255,255,0.08); border-radius: 8px; padding: 16px; margin-bottom: 12px; }
+.card h3 { margin: 0 0 8px; font-size: 14px; }
+input, textarea, select { width: 100%; background: #141c2b; border: 1px solid rgba(255,255,255,0.14); border-radius: 6px; color: #c8d8ec; padding: 8px; font-size: 12px; box-sizing: border-box; margin-bottom: 8px; }
+button { background: #2f9cf5; color: #fff; border: none; border-radius: 6px; padding: 8px 16px; cursor: pointer; font-size: 12px; margin-right: 8px; margin-bottom: 8px; }
+button:hover { opacity: 0.85; }
+button.danger { background: #f04c64; }
+button:disabled { opacity: 0.4; cursor: not-allowed; }
+.log { background: #050710; border: 1px solid rgba(255,255,255,0.08); border-radius: 6px; padding: 10px; font-family: monospace; font-size: 11px; max-height: 400px; overflow-y: auto; white-space: pre-wrap; color: #6080a0; }
+.log .ok { color: #22c55e; }
+.log .err { color: #f04c64; }
+.log .info { color: #2f9cf5; }
+img.thumb { width: 60px; height: 45px; object-fit: cover; border-radius: 4px; border: 1px solid rgba(255,255,255,0.14); margin: 2px; }
+.progress { width: 100%; height: 6px; background: #141c2b; border-radius: 3px; overflow: hidden; margin: 8px 0; }
+.progress-fill { height: 100%; background: #2f9cf5; border-radius: 3px; transition: width 0.3s; }
+table { width: 100%; border-collapse: collapse; font-size: 11px; margin-top: 8px; }
+th { text-align: left; padding: 6px 8px; background: rgba(255,255,255,0.03); color: #6080a0; }
+td { padding: 6px 8px; border-bottom: 1px solid rgba(255,255,255,0.06); }
+.badge { padding: 2px 6px; border-radius: 8px; font-size: 10px; }
+.badge-ok { background: rgba(34,197,94,0.15); color: #22c55e; }
+.badge-pending { background: rgba(47,156,245,0.15); color: #2f9cf5; }
+.badge-err { background: rgba(240,76,100,0.15); color: #f04c64; }
+</style>
+</head>
+<body>
+<h1>I2V 批量图生视频 — 测试面板</h1>
+
+<div class="card">
+  <h3>1. 批量上传产品图</h3>
+  <p style="color:#6080a0;font-size:11px;margin-bottom:8px">选择多张产品图，每张图会自动生成一组视频提示词</p>
+  <input type="file" id="img-input" accept="image/*" multiple>
+  <div id="img-previews" style="display:flex;gap:4px;flex-wrap:wrap;margin-top:4px"></div>
+  <div id="img-count" style="color:#6080a0;font-size:11px;margin-top:4px"></div>
+</div>
+
+<div class="card">
+  <h3>2. 统一创意描述（可选）</h3>
+  <p style="color:#6080a0;font-size:11px;margin-bottom:8px">所有图片共用的创意方向描述</p>
+  <textarea id="prompt" rows="2" placeholder="如：新加坡时尚博主在咖啡馆使用产品，温暖灯光，日常Vlog风格..."></textarea>
+</div>
+
+<div class="card">
+  <h3>3. 批量生成提示词</h3>
+  <button id="btn-batch-gen" onclick="batchGenerate()" disabled>开始批量生成</button>
+  <button class="danger" id="btn-clear" onclick="clearAll()">清空任务</button>
+  <div class="progress" id="gen-progress" style="display:none"><div class="progress-fill" id="gen-fill"></div></div>
+  <div id="gen-status" style="font-size:12px;color:#6080a0;margin-top:4px"></div>
+</div>
+
+<div class="card">
+  <h3>4. 任务列表 <span id="task-count" style="color:#6080a0;font-size:11px"></span></h3>
+  <table>
+    <thead><tr><th>#</th><th>图片</th><th>提示词（第1段）</th><th>第2段</th><th>状态</th></tr></thead>
+    <tbody id="task-body"><tr><td colspan="5" style="color:#3a5070;text-align:center">暂无任务</td></tr></tbody>
+  </table>
+</div>
+
+<div class="card">
+  <h3>5. 批量处理（操作 Flow）</h3>
+  <p style="color:#6080a0;font-size:11px;margin-bottom:8px">确保 Flow 项目页面已打开，然后点击开始</p>
+  <button id="btn-start-flow" onclick="startFlowBatch()">开始批量生成视频</button>
+  <button class="danger" onclick="stopFlow()">停止</button>
+  <div id="flow-status" style="font-size:12px;color:#6080a0;margin-top:4px"></div>
+</div>
+
+<div class="card">
+  <h3>日志</h3>
+  <div id="log" class="log"></div>
+</div>
+
+<script>
+const API = "https://i2v-server.vercel.app";
+const LICENSE = "I2V-28FB-C5DB";
+const deviceId = "test-" + Math.random().toString(36).slice(2, 8);
+let uploadedImages = []; // [{name, base64}]
+
+function log(msg, cls = '') {
+  const el = document.getElementById('log');
+  const div = document.createElement('div');
+  div.className = cls;
+  div.textContent = `[${new Date().toLocaleTimeString()}] ${msg}`;
+  el.appendChild(div);
+  el.scrollTop = el.scrollHeight;
+}
+
+// ── 1. 批量上传 ──────────────────────────────────────
+
+document.getElementById('img-input').addEventListener('change', async (e) => {
+  uploadedImages = [];
+  const previews = document.getElementById('img-previews');
+  previews.innerHTML = '';
+
+  for (const file of Array.from(e.target.files)) {
+    const b64 = await new Promise(r => {
+      const rd = new FileReader();
+      rd.onload = () => r(rd.result);
+      rd.readAsDataURL(file);
+    });
+    uploadedImages.push({ name: file.name, base64: b64 });
+    const img = document.createElement('img');
+    img.src = b64;
+    img.className = 'thumb';
+    previews.appendChild(img);
+  }
+
+  document.getElementById('img-count').textContent = `已选择 ${uploadedImages.length} 张图片`;
+  document.getElementById('btn-batch-gen').disabled = uploadedImages.length === 0;
+  log(`已加载 ${uploadedImages.length} 张图片`, 'ok');
+});
+
+// ── 3. 批量生成提示词 ────────────────────────────────
+
+async function batchGenerate() {
+  if (!uploadedImages.length) return;
+
+  const prompt = document.getElementById('prompt').value.trim() || '创建一个吸引人的产品视频';
+  const total = uploadedImages.length;
+  let done = 0;
+  let errors = 0;
+
+  document.getElementById('btn-batch-gen').disabled = true;
+  document.getElementById('gen-progress').style.display = '';
+  document.getElementById('gen-status').textContent = `生成中... 0/${total}`;
+  log(`开始批量生成: ${total} 张图片`, 'info');
+
+  // 读取已有任务
+  const existingRows = JSON.parse(localStorage.getItem('i2v_rows') || '[]');
+  let nextRowN = existingRows.length ? Math.max(...existingRows.map(r => r.row_n)) + 1 : 1;
+  const newRows = [];
+
+  for (let i = 0; i < total; i++) {
+    const img = uploadedImages[i];
+    document.getElementById('gen-status').textContent = `生成中... ${i + 1}/${total} — ${img.name}`;
+    document.getElementById('gen-fill').style.width = `${Math.round((i / total) * 100)}%`;
+    log(`[${i + 1}/${total}] 生成 ${img.name}...`, 'info');
+
+    try {
+      const r = await fetch(API + '/api/generate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          images_base64: [img.base64],
+          prompt,
+          code: LICENSE,
+          device_id: deviceId,
+        }),
+      });
+      const d = await r.json();
+
+      if (d.ok && d.prompts && d.prompts.length > 0) {
+        // 自动取第一个方向
+        const p = d.prompts[0];
+        newRows.push({
+          row_n: nextRowN++,
+          segment_1: p.segment_1 || '',
+          segment_1_zh: p.segment_1_zh || '',
+          segment_2: p.segment_2 || '',
+          segment_2_zh: p.segment_2_zh || '',
+          image_base64: img.base64,
+          image_name: img.name,
+          status: 'pending',
+          generated_video: '',
+          error_msg: '',
+        });
+        done++;
+        log(`[${i + 1}/${total}] ${img.name} — 成功`, 'ok');
+      } else {
+        errors++;
+        log(`[${i + 1}/${total}] ${img.name} — 失败: ${d.error || '未知错误'}`, 'err');
+      }
+    } catch (e) {
+      errors++;
+      log(`[${i + 1}/${total}] ${img.name} — 异常: ${e.message}`, 'err');
+    }
+  }
+
+  // 保存所有新行
+  const allRows = [...existingRows, ...newRows];
+  localStorage.setItem('i2v_rows', JSON.stringify(allRows));
+
+  document.getElementById('gen-fill').style.width = '100%';
+  document.getElementById('gen-status').textContent = `完成! 成功 ${done}/${total}，失败 ${errors}`;
+  document.getElementById('btn-batch-gen').disabled = false;
+  log(`批量生成完成: 成功 ${done}, 失败 ${errors}, 共保存 ${allRows.length} 个任务`, 'ok');
+
+  // 刷新任务列表
+  renderTasks();
+}
+
+// ── 4. 任务列表 ──────────────────────────────────────
+
+function renderTasks() {
+  const rows = JSON.parse(localStorage.getItem('i2v_rows') || '[]');
+  const tbody = document.getElementById('task-body');
+  document.getElementById('task-count').textContent = `(${rows.length} 个)`;
+
+  if (!rows.length) {
+    tbody.innerHTML = '<tr><td colspan="5" style="color:#3a5070;text-align:center">暂无任务</td></tr>';
+    return;
+  }
+
+  tbody.innerHTML = rows.map(r => {
+    const thumb = r.image_base64 ? `<img class="thumb" src="${r.image_base64}">` : '-';
+    const seg1 = (r.segment_1_zh || r.segment_1 || '').substring(0, 80);
+    const seg2 = (r.segment_2_zh || r.segment_2 || '').substring(0, 40);
+    const badge = r.generated_video ? '<span class="badge badge-ok">完成</span>'
+      : r.error_msg ? '<span class="badge badge-err">失败</span>'
+      : '<span class="badge badge-pending">待处理</span>';
+    return `<tr><td>${r.row_n}</td><td>${thumb}</td><td>${seg1}...</td><td>${seg2}...</td><td>${badge}</td></tr>`;
+  }).join('');
+}
+
+function clearAll() {
+  localStorage.removeItem('i2v_rows');
+  renderTasks();
+  log('已清空所有任务', 'info');
+}
+
+// ── 5. 批量操作 Flow ─────────────────────────────────
+
+function startFlowBatch() {
+  const rows = JSON.parse(localStorage.getItem('i2v_rows') || '[]').filter(r => !r.generated_video);
+  if (!rows.length) { log('没有待处理任务', 'err'); return; }
+
+  // 通过 window event 触发扩展的批处理
+  // 先保存行到 chrome.storage
+  log(`向扩展发送 ${rows.length} 个待处理任务...`, 'info');
+  document.getElementById('flow-status').textContent = '正在启动...';
+
+  // 发到 Flow 页面的 content.js
+  // 需要在 Flow 页面上执行，不能在这个页面
+  log('请切换到 Flow 标签页，在控制台执行:', 'info');
+  log(`window.dispatchEvent(new CustomEvent('__start_i2v__', {detail: {limit: ${rows.length}}}))`, 'info');
+  log('或者通过扩展 popup 的"批量处理"标签启动', 'info');
+  document.getElementById('flow-status').textContent = '请在 Flow 页面或扩展 popup 中启动批量处理';
+}
+
+function stopFlow() {
+  log('停止指令需要在 Flow 页面发送', 'info');
+}
+
+// 初始化
+renderTasks();
+log('测试面板已加载', 'info');
+
+// 自动测试 API
+(async () => {
+  try {
+    const r = await fetch(API + '/api/verify', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({code: LICENSE, device_id: deviceId})
+    });
+    const d = await r.json();
+    log('API 连接: ' + (d.valid ? '正常，许可有效 ✓' : '失败 - ' + d.error), d.valid ? 'ok' : 'err');
+  } catch(e) { log('API 连接失败: ' + e.message, 'err'); }
+})();
+</script>
+</body>
+</html>

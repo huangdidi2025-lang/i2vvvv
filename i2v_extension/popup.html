@@ -1,0 +1,113 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<div id="app">
+
+  <!-- ═══ 激活页 ═══════════════════════════════════ -->
+  <div id="page-activate" class="page">
+    <div class="logo">I2V 图生视频</div>
+    <div class="subtitle">AI 产品图生视频自动化工具</div>
+    <div class="activate-box">
+      <input id="license-input" type="text" placeholder="请输入许可码 (如 I2V-XXXX-XXXX)" spellcheck="false">
+      <button id="btn-activate" class="btn-primary">激活</button>
+    </div>
+    <div id="activate-msg" class="msg"></div>
+  </div>
+
+  <!-- ═══ 主页 ═════════════════════════════════════ -->
+  <div id="page-main" class="page" style="display:none">
+
+    <!-- 顶栏 -->
+    <div class="topbar">
+      <div class="topbar-title">I2V 图生视频</div>
+      <div class="topbar-right">
+        <span id="license-info" class="license-tag"></span>
+        <button id="btn-logout" class="btn-icon" title="退出">✕</button>
+      </div>
+    </div>
+
+    <!-- Tab 导航 -->
+    <div class="tabs">
+      <button class="tab active" data-tab="generate">生成提示词</button>
+      <button class="tab" data-tab="tasks">任务列表</button>
+      <button class="tab" data-tab="batch">批量处理</button>
+    </div>
+
+    <!-- ── 生成提示词 ─────────────────────────────── -->
+    <div class="tab-panel active" id="panel-generate">
+      <div class="section">
+        <div class="section-title">上传产品图</div>
+        <div class="drop-zone" id="img-drop">
+          <div>点击或拖放产品图到这里</div>
+          <div class="hint">JPG/PNG/WebP（最多3张）</div>
+          <input type="file" id="img-input" multiple accept="image/*">
+        </div>
+        <div id="img-previews" class="preview-row"></div>
+      </div>
+
+      <div class="section">
+        <div class="section-title">创意描述</div>
+        <textarea id="user-prompt" rows="2" placeholder="如：一位时尚女孩在咖啡馆使用产品，温暖灯光，Vlog风格..."></textarea>
+        <button id="btn-generate" class="btn-primary" disabled>生成3组创意方向</button>
+        <div id="gen-status" class="msg"></div>
+      </div>
+
+      <div class="section" id="results-section" style="display:none">
+        <div class="section-title">选择创意方向</div>
+        <div id="prompt-results"></div>
+        <button id="btn-save" class="btn-primary">保存选中到任务列表</button>
+      </div>
+    </div>
+
+    <!-- ── 任务列表 ─────────────────────────────── -->
+    <div class="tab-panel" id="panel-tasks">
+      <div class="section">
+        <div class="section-title">任务列表 <button id="btn-refresh" class="btn-small">刷新</button></div>
+        <table id="task-table">
+          <thead><tr><th>#</th><th>图片</th><th>提示词</th><th>状态</th></tr></thead>
+          <tbody id="task-body"><tr><td colspan="4" class="empty">暂无任务</td></tr></tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- ── 批量处理 ─────────────────────────────── -->
+    <div class="tab-panel" id="panel-batch">
+      <div class="section">
+        <div class="stats">
+          <div class="stat"><span id="st-total" class="num">0</span><span class="lbl">总计</span></div>
+          <div class="stat"><span id="st-done" class="num green">0</span><span class="lbl">完成</span></div>
+          <div class="stat"><span id="st-pending" class="num amber">0</span><span class="lbl">待处理</span></div>
+          <div class="stat"><span id="st-error" class="num red">0</span><span class="lbl">失败</span></div>
+        </div>
+      </div>
+
+      <div class="section">
+        <div class="section-title">批量视频生成</div>
+        <p class="hint">请确保已在浏览器中打开 Google Flow 项目页面并登录。</p>
+        <div class="btn-row">
+          <button id="btn-start" class="btn-primary">开始生成</button>
+          <button id="btn-stop" class="btn-danger" disabled>停止</button>
+        </div>
+        <div id="progress-bar" class="progress" style="display:none">
+          <div class="progress-fill" id="progress-fill"></div>
+        </div>
+        <div id="batch-info" class="hint"></div>
+      </div>
+
+      <div class="section">
+        <div class="section-title">实时日志</div>
+        <div id="log-box" class="log-box"></div>
+      </div>
+    </div>
+
+  </div><!-- /page-main -->
+</div>
+
+<script src="popup.js"></script>
+</body>
+</html>

@@ -1,0 +1,379 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1">
+<title>I2V 管理后台</title>
+<style>
+:root { --bg: #05070d; --bg2: #0c1220; --bg3: #101828; --bg4: #141f32; --border: rgba(255,255,255,0.07); --border2: rgba(255,255,255,0.12); --accent: #2f9cf5; --green: #22c55e; --red: #f04c64; --amber: #f5a623; --txt: #c8d8ec; --txt2: #6080a0; --txt3: #3a5070; --radius: 8px; }
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body { font-family: -apple-system, system-ui, sans-serif; font-size: 14px; background: var(--bg); color: var(--txt); min-height: 100vh; }
+a { color: var(--accent); }
+button { font-family: inherit; cursor: pointer; }
+
+/* ── 顶栏 ──────────────────── */
+.topbar { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; padding: 12px 16px; background: var(--bg2); border-bottom: 1px solid var(--border); position: sticky; top: 0; z-index: 100; }
+.topbar h1 { font-size: 16px; color: var(--accent); white-space: nowrap; }
+.topbar .right { display: flex; gap: 6px; align-items: center; margin-left: auto; }
+.topbar input { background: var(--bg3); border: 1px solid var(--border2); border-radius: 6px; color: var(--txt); padding: 8px 10px; font-size: 13px; outline: none; width: 140px; }
+.topbar input:focus { border-color: var(--accent); }
+.btn { background: var(--accent); color: #fff; border: none; border-radius: 6px; padding: 8px 14px; font-size: 13px; white-space: nowrap; }
+.btn:hover { opacity: 0.85; }
+.btn-sm { padding: 5px 10px; font-size: 12px; }
+.btn-outline { background: transparent; border: 1px solid var(--border2); color: var(--txt2); }
+.btn-danger { background: var(--red); }
+.dot { width: 8px; height: 8px; border-radius: 50%; background: var(--txt3); flex-shrink: 0; }
+.dot.ok { background: var(--green); }
+
+/* ── Tab 导航 ──────────────── */
+.tabs { display: flex; background: var(--bg2); border-bottom: 1px solid var(--border); overflow-x: auto; -webkit-overflow-scrolling: touch; }
+.tab { flex-shrink: 0; padding: 12px 16px; font-size: 13px; font-weight: 500; color: var(--txt2); background: none; border: none; border-bottom: 2px solid transparent; }
+.tab.active { color: var(--accent); border-bottom-color: var(--accent); }
+
+/* ── 内容区 ─────────────────── */
+.content { padding: 16px; max-width: 1200px; margin: 0 auto; }
+.card { background: var(--bg2); border: 1px solid var(--border); border-radius: var(--radius); padding: 16px; margin-bottom: 14px; }
+.card h3 { font-size: 14px; font-weight: 600; margin-bottom: 10px; display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px; }
+.panel { display: none; }
+.panel.active { display: block; }
+
+/* ── 统计 ───────────────────── */
+.stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(100px, 1fr)); gap: 10px; margin-bottom: 16px; }
+.stat { background: var(--bg3); border: 1px solid var(--border); border-radius: var(--radius); padding: 14px 10px; text-align: center; }
+.stat .num { font-size: 22px; font-weight: 700; }
+.stat .lbl { font-size: 11px; color: var(--txt3); margin-top: 2px; }
+
+/* ── 用户列表 ────────────────── */
+.user-card { display: flex; align-items: center; gap: 10px; padding: 12px; background: var(--bg3); border: 1px solid var(--border); border-radius: var(--radius); margin-bottom: 8px; cursor: pointer; transition: border-color .15s; }
+.user-card:hover, .user-card:active { border-color: var(--accent); }
+.user-card .uid { font-size: 12px; font-family: monospace; color: var(--accent); word-break: break-all; }
+.user-card .uinfo { font-size: 11px; color: var(--txt3); }
+.user-card .ubadge { margin-left: auto; font-size: 10px; padding: 2px 8px; border-radius: 8px; background: rgba(34,197,94,0.12); color: var(--green); white-space: nowrap; }
+
+/* ── 表格（手机端横滚）──────── */
+.table-wrap { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+table { width: 100%; border-collapse: collapse; font-size: 12px; min-width: 600px; }
+th { text-align: left; padding: 8px; background: var(--bg3); color: var(--txt2); font-weight: 500; border-bottom: 1px solid var(--border); white-space: nowrap; position: sticky; top: 0; }
+td { padding: 8px; border-bottom: 1px solid var(--border); vertical-align: top; }
+tr:active { background: rgba(255,255,255,0.03); }
+
+/* ── 图片 ───────────────────── */
+td img.thumb { width: 44px; height: 44px; object-fit: cover; border-radius: 4px; cursor: pointer; }
+.img-modal { display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.85); z-index: 200; align-items: center; justify-content: center; padding: 20px; }
+.img-modal.show { display: flex; }
+.img-modal img { max-width: 100%; max-height: 90vh; border-radius: 8px; }
+.img-modal .close { position: absolute; top: 16px; right: 16px; color: #fff; font-size: 28px; background: none; border: none; cursor: pointer; }
+
+/* ── 徽章 ───────────────────── */
+.badge { display: inline-block; padding: 2px 8px; border-radius: 8px; font-size: 10px; font-weight: 500; white-space: nowrap; }
+.badge-done { background: rgba(34,197,94,0.15); color: var(--green); }
+.badge-pending { background: rgba(47,156,245,0.15); color: var(--accent); }
+.badge-error { background: rgba(240,76,100,0.15); color: var(--red); }
+.badge-submitted { background: rgba(245,166,35,0.15); color: var(--amber); }
+
+/* ── 提示词预览 ─────────────── */
+.prompt-cell { max-width: 200px; }
+.prompt-short { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 200px; color: var(--txt2); font-size: 11px; }
+.prompt-expand { display: none; position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%); z-index: 150; background: var(--bg4); border: 1px solid var(--border2); border-radius: 10px; padding: 16px; width: 90%; max-width: 500px; max-height: 70vh; overflow-y: auto; font-size: 13px; line-height: 1.6; white-space: pre-wrap; word-break: break-word; box-shadow: 0 10px 40px rgba(0,0,0,0.6); }
+.prompt-expand.show { display: block; }
+.prompt-expand .close { position: absolute; top: 8px; right: 12px; color: var(--txt3); font-size: 20px; background: none; border: none; cursor: pointer; }
+.prompt-expand h4 { color: var(--accent); font-size: 13px; margin-bottom: 8px; }
+.overlay { display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.5); z-index: 140; }
+.overlay.show { display: block; }
+
+/* ── 许可码 ──────────────────── */
+.license-row { display: flex; gap: 8px; flex-wrap: wrap; }
+.license-row input { flex: 1; min-width: 150px; background: var(--bg3); border: 1px solid var(--border2); border-radius: 6px; color: var(--txt); padding: 8px 10px; font-size: 13px; outline: none; }
+
+/* ── 空 & 加载 ──────────────── */
+.empty { text-align: center; padding: 30px; color: var(--txt3); }
+.loading { text-align: center; padding: 20px; color: var(--txt3); }
+
+/* ── 返回按钮 ────────────────── */
+.back-btn { display: inline-flex; align-items: center; gap: 4px; color: var(--txt2); font-size: 13px; background: none; border: none; padding: 8px 0; margin-bottom: 10px; }
+.back-btn:hover { color: var(--accent); }
+</style>
+</head>
+<body>
+
+<!-- 顶栏 -->
+<div class="topbar">
+  <h1>I2V 管理后台</h1>
+  <div class="right">
+    <div class="dot" id="conn-dot"></div>
+    <input id="cfg-key" type="password" placeholder="管理员密钥">
+    <button class="btn btn-sm" onclick="connect()">连接</button>
+  </div>
+</div>
+
+<!-- Tab -->
+<div class="tabs">
+  <button class="tab active" data-tab="overview" onclick="switchTab('overview')">总览</button>
+  <button class="tab" data-tab="users" onclick="switchTab('users')">用户</button>
+  <button class="tab" data-tab="licenses" onclick="switchTab('licenses')">许可码</button>
+  <button class="tab" data-tab="detail" onclick="switchTab('detail')" id="tab-detail" style="display:none">用户详情</button>
+</div>
+
+<!-- 内容 -->
+<div class="content">
+
+  <!-- 总览 -->
+  <div class="panel active" id="panel-overview">
+    <div class="stats">
+      <div class="stat"><div class="num" id="s-users" style="color:var(--accent)">-</div><div class="lbl">总用户</div></div>
+      <div class="stat"><div class="num" id="s-rows" style="color:var(--green)">-</div><div class="lbl">总任务</div></div>
+      <div class="stat"><div class="num" id="s-done" style="color:var(--green)">-</div><div class="lbl">已完成</div></div>
+      <div class="stat"><div class="num" id="s-errors" style="color:var(--red)">-</div><div class="lbl">失败</div></div>
+    </div>
+    <div class="card">
+      <h3>最近活跃用户</h3>
+      <div id="recent-list"><div class="empty">连接后显示</div></div>
+    </div>
+  </div>
+
+  <!-- 用户列表 -->
+  <div class="panel" id="panel-users">
+    <div class="card">
+      <h3>全部用户 <span id="user-total" style="color:var(--txt3);font-weight:400"></span> <button class="btn btn-sm btn-outline" onclick="loadUsers()">刷新</button></h3>
+      <div id="user-list"><div class="empty">连接后显示</div></div>
+    </div>
+  </div>
+
+  <!-- 许可码 -->
+  <div class="panel" id="panel-licenses">
+    <div class="card">
+      <h3>生成许可码</h3>
+      <div class="license-row">
+        <input id="new-code" placeholder="留空自动生成">
+        <button class="btn" onclick="createLicense()">生成</button>
+      </div>
+      <div id="license-msg" style="font-size:12px;margin-top:8px"></div>
+    </div>
+  </div>
+
+  <!-- 用户详情 -->
+  <div class="panel" id="panel-detail">
+    <button class="back-btn" onclick="switchTab('users')">← 返回用户列表</button>
+
+    <div class="card">
+      <h3>用户信息</h3>
+      <div style="font-size:13px;color:var(--txt2);line-height:2">
+        设备ID: <span id="ud-id" style="color:var(--accent);font-family:monospace"></span><br>
+        许可码: <span id="ud-license" style="color:var(--txt)"></span><br>
+        最后活跃: <span id="ud-active" style="color:var(--txt)"></span><br>
+        任务数: <span id="ud-count" style="color:var(--txt)"></span>
+      </div>
+    </div>
+
+    <div class="card">
+      <h3>任务数据 <button class="btn btn-sm btn-outline" onclick="loadUserDetail(currentUserId)">刷新</button></h3>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>#</th><th>图片</th><th>用户输入</th><th>AI提示词1</th><th>AI提示词2</th><th>状态</th><th>错误</th><th>时间</th></tr></thead>
+          <tbody id="ud-rows"><tr><td colspan="8" class="loading">加载中...</td></tr></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<!-- 图片弹窗 -->
+<div class="img-modal" id="img-modal">
+  <button class="close" onclick="closeImage()">✕</button>
+  <img id="img-modal-src">
+</div>
+
+<!-- 提示词弹窗 -->
+<div class="overlay" id="prompt-overlay" onclick="closePrompt()"></div>
+<div class="prompt-expand" id="prompt-expand">
+  <button class="close" onclick="closePrompt()">✕</button>
+  <h4 id="prompt-title"></h4>
+  <div id="prompt-body"></div>
+</div>
+
+<script>
+const API = 'https://i2v-server.vercel.app';
+let adminKey = localStorage.getItem('admin_key') || '';
+let allUsers = [];
+let currentUserId = null;
+
+document.addEventListener('DOMContentLoaded', () => {
+  document.getElementById('cfg-key').value = adminKey;
+  if (adminKey) connect();
+});
+
+function switchTab(name) {
+  document.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t.dataset.tab === name));
+  document.querySelectorAll('.panel').forEach(p => p.classList.toggle('active', p.id === 'panel-' + name));
+}
+
+async function api(path, body = null) {
+  const opts = body
+    ? { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ...body, admin_key: adminKey }) }
+    : {};
+  const url = body ? `${API}${path}` : `${API}${path}${path.includes('?') ? '&' : '?'}admin_key=${adminKey}`;
+  const resp = await fetch(url, opts);
+  return resp.json();
+}
+
+async function connect() {
+  adminKey = document.getElementById('cfg-key').value.trim();
+  localStorage.setItem('admin_key', adminKey);
+  try {
+    await loadUsers();
+    document.getElementById('conn-dot').className = 'dot ok';
+  } catch (e) {
+    document.getElementById('conn-dot').className = 'dot';
+    alert('连接失败: ' + e.message);
+  }
+}
+
+// ── 用户 ──────────────────────
+
+async function loadUsers() {
+  const data = await api('/api/admin/users');
+  if (!data.ok) throw new Error(data.error);
+  allUsers = (data.users || []).filter(u => !u.id.startsWith('test'));
+  allUsers.sort((a, b) => (b.last_active || '').localeCompare(a.last_active || ''));
+
+  document.getElementById('s-users').textContent = allUsers.length;
+  document.getElementById('user-total').textContent = `(${allUsers.length})`;
+
+  // 用户卡片列表
+  const html = allUsers.map(u => `
+    <div class="user-card" onclick="selectUser('${u.id}')">
+      <div>
+        <div class="uid">${u.id}</div>
+        <div class="uinfo">${u.license_code || '-'} | ${fmtTime(u.last_active)}</div>
+      </div>
+      <span class="ubadge">${u.license_code ? '已激活' : '-'}</span>
+    </div>
+  `).join('');
+
+  document.getElementById('user-list').innerHTML = html || '<div class="empty">暂无用户</div>';
+  document.getElementById('recent-list').innerHTML = allUsers.slice(0, 8).map(u => `
+    <div class="user-card" onclick="selectUser('${u.id}')">
+      <div>
+        <div class="uid">${u.id}</div>
+        <div class="uinfo">${u.license_code || '-'} | ${fmtTime(u.last_active)}</div>
+      </div>
+    </div>
+  `).join('') || '<div class="empty">暂无</div>';
+
+  // 统计
+  let totalRows = 0, totalDone = 0, totalErr = 0;
+  for (const u of allUsers.slice(0, 15)) {
+    try {
+      const d = await api(`/api/admin/user-rows?device_id=${u.id}`);
+      if (d.ok && d.rows) {
+        totalRows += d.rows.length;
+        totalDone += d.rows.filter(r => r.status === 'done').length;
+        totalErr += d.rows.filter(r => r.status === 'error' || r.error_msg).length;
+      }
+    } catch {}
+  }
+  document.getElementById('s-rows').textContent = totalRows;
+  document.getElementById('s-done').textContent = totalDone;
+  document.getElementById('s-errors').textContent = totalErr;
+}
+
+function selectUser(id) {
+  currentUserId = id;
+  document.getElementById('tab-detail').style.display = '';
+  switchTab('detail');
+  loadUserDetail(id);
+}
+
+async function loadUserDetail(id) {
+  const user = allUsers.find(u => u.id === id);
+  document.getElementById('ud-id').textContent = id;
+  document.getElementById('ud-license').textContent = user?.license_code || '-';
+  document.getElementById('ud-active').textContent = fmtTime(user?.last_active);
+
+  const d = await api(`/api/admin/user-rows?device_id=${id}`);
+  const rows = d.ok ? (d.rows || []) : [];
+  document.getElementById('ud-count').textContent = rows.length;
+
+  if (!rows.length) {
+    document.getElementById('ud-rows').innerHTML = '<tr><td colspan="8" class="empty">暂无数据</td></tr>';
+    return;
+  }
+
+  document.getElementById('ud-rows').innerHTML = rows.map((r, i) => {
+    const img = r.image_base64
+      ? `<img class="thumb" src="${r.image_base64}" onclick="showImage(this.src)">`
+      : (r.image_name || '-');
+
+    const statusMap = {
+      done: ['badge-done', '已完成'], pending: ['badge-pending', '待处理'],
+      submitted: ['badge-submitted', '已提交'], extending: ['badge-submitted', '延伸中'],
+      error: ['badge-error', '失败'], regen: ['badge-pending', '重新生成'],
+    };
+    const [bc, bt] = statusMap[r.status] || ['badge-pending', r.status || '-'];
+
+    return `<tr>
+      <td>${r.row_n || '-'}</td>
+      <td>${img}</td>
+      <td class="prompt-cell"><span class="prompt-short" onclick="showPrompt('用户输入', '${esc(r.user_prompt || '')}')">${esc((r.user_prompt || '-').substring(0, 30))}</span></td>
+      <td class="prompt-cell"><span class="prompt-short" onclick="showPrompt('AI提示词(第1段)', '${esc(r.segment_1_zh || r.segment_1 || '')}')">${esc((r.segment_1_zh || r.segment_1 || '-').substring(0, 40))}</span></td>
+      <td class="prompt-cell"><span class="prompt-short" onclick="showPrompt('AI提示词(第2段)', '${esc(r.segment_2_zh || r.segment_2 || '')}')">${esc((r.segment_2_zh || r.segment_2 || '-').substring(0, 40))}</span></td>
+      <td><span class="badge ${bc}">${bt}</span></td>
+      <td style="color:var(--red);font-size:11px;max-width:100px;word-break:break-all">${esc(r.error_msg || '-')}</td>
+      <td style="font-size:11px;color:var(--txt3);white-space:nowrap">${fmtTime(r.updated_at || r.created_at)}</td>
+    </tr>`;
+  }).join('');
+}
+
+// ── 许可码 ────────────────────
+
+async function createLicense() {
+  const code = document.getElementById('new-code').value.trim();
+  const d = await api('/api/admin/create-license', { code: code || undefined });
+  const msg = document.getElementById('license-msg');
+  if (d.ok) {
+    msg.style.color = 'var(--green)';
+    msg.textContent = '已创建: ' + d.code;
+    document.getElementById('new-code').value = '';
+  } else {
+    msg.style.color = 'var(--red)';
+    msg.textContent = d.error || '失败';
+  }
+}
+
+// ── 弹窗 ──────────────────────
+
+function showImage(src) {
+  document.getElementById('img-modal-src').src = src;
+  document.getElementById('img-modal').classList.add('show');
+}
+function closeImage() { document.getElementById('img-modal').classList.remove('show'); }
+
+function showPrompt(title, text) {
+  if (!text || text === '-') return;
+  document.getElementById('prompt-title').textContent = title;
+  document.getElementById('prompt-body').textContent = text;
+  document.getElementById('prompt-overlay').classList.add('show');
+  document.getElementById('prompt-expand').classList.add('show');
+}
+function closePrompt() {
+  document.getElementById('prompt-overlay').classList.remove('show');
+  document.getElementById('prompt-expand').classList.remove('show');
+}
+
+// ── 工具 ──────────────────────
+
+function esc(s) { return (s || '').replace(/\\/g, '\\\\').replace(/'/g, "\\'").replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;'); }
+function fmtTime(iso) {
+  if (!iso) return '-';
+  try { return new Date(iso).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' }); }
+  catch { return iso; }
+}
+
+// 点击图片弹窗外关闭
+document.getElementById('img-modal').addEventListener('click', (e) => {
+  if (e.target === document.getElementById('img-modal')) closeImage();
+});
+</script>
+</body>
+</html>

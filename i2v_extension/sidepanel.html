@@ -1,0 +1,219 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<link rel="stylesheet" href="styles.css">
+<style>
+body { width: 100%; min-height: 100vh; overflow-y: auto; }
+.page { padding: 16px; }
+.tab-panel { max-height: none; overflow-y: visible; }
+.drop-zone { padding: 24px; }
+.preview-row img { width: 50px; height: 38px; }
+.log-box { max-height: 300px; }
+.progress { height: 6px; margin: 10px 0; }
+table { font-size: 12px; }
+td img { width: 50px; height: 38px; }
+.stats { gap: 10px; }
+.stat .num { font-size: 24px; }
+.batch-hint { font-size: 12px; color: var(--txt2); margin-bottom: 10px; line-height: 1.5; }
+
+/* 一键生成按钮 */
+.btn-hero {
+  display: block; width: 100%; padding: 14px; margin-top: 10px;
+  font-size: 16px; font-weight: 700; letter-spacing: 1px;
+  background: linear-gradient(135deg, #2f9cf5, #6c5ce7); color: #fff;
+  border: none; border-radius: 10px; cursor: pointer;
+  box-shadow: 0 4px 15px rgba(47,156,245,0.35);
+  transition: transform .15s, box-shadow .15s;
+}
+.btn-hero:hover { transform: translateY(-1px); box-shadow: 0 6px 20px rgba(47,156,245,0.45); }
+.btn-hero:disabled { opacity: 0.4; transform: none; box-shadow: none; cursor: not-allowed; }
+
+/* 提示词悬浮预览 */
+.prompt-cell { position: relative; cursor: default; }
+.prompt-cell .prompt-text { max-width: 180px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; display: block; }
+.prompt-tooltip {
+  display: none; position: absolute; left: 0; top: 100%; z-index: 100;
+  background: #1a2436; border: 1px solid rgba(255,255,255,0.15); border-radius: 8px;
+  padding: 12px; width: 350px; max-height: 300px; overflow-y: auto;
+  font-size: 11px; line-height: 1.6; color: #c8d8ec;
+  box-shadow: 0 8px 30px rgba(0,0,0,0.5);
+  white-space: pre-wrap; word-break: break-word;
+}
+.prompt-cell:hover .prompt-tooltip { display: block; }
+.prompt-tooltip .seg-label { color: #2f9cf5; font-weight: 600; margin-top: 6px; display: block; }
+.prompt-tooltip .seg-label:first-child { margin-top: 0; }
+
+/* 重新生成按钮 */
+.btn-regen { background: rgba(47,156,245,0.12); color: #2f9cf5; border: 1px solid rgba(47,156,245,0.25); border-radius: 4px; padding: 2px 8px; font-size: 10px; cursor: pointer; white-space: nowrap; }
+.btn-regen:hover { background: rgba(47,156,245,0.25); }
+.btn-del { background: rgba(239,68,68,0.12); color: var(--red); border: 1px solid rgba(239,68,68,0.25); border-radius: 4px; padding: 2px 8px; font-size: 10px; cursor: pointer; white-space: nowrap; }
+.btn-del:hover { background: rgba(239,68,68,0.25); }
+
+/* 收藏提示词区域 */
+.fav-prompts { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+.fav-chip {
+  position: relative; background: var(--bg4); border: 1px solid rgba(255,255,255,0.1);
+  border-radius: 6px; padding: 4px 10px; font-size: 10px; color: var(--txt2);
+  cursor: pointer; max-width: 160px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  transition: border-color .2s;
+}
+.fav-chip:hover { border-color: var(--accent); color: var(--txt); }
+.fav-chip .fav-full {
+  display: none; position: absolute; left: 0; bottom: 100%; z-index: 100;
+  background: #1a2436; border: 1px solid rgba(255,255,255,0.15); border-radius: 8px;
+  padding: 10px; width: 280px; max-height: 200px; overflow-y: auto;
+  font-size: 11px; line-height: 1.5; color: #c8d8ec; white-space: pre-wrap; word-break: break-word;
+  box-shadow: 0 8px 30px rgba(0,0,0,0.5);
+}
+.fav-chip:hover .fav-full { display: block; }
+.fav-chip .fav-del { position: absolute; top: -4px; right: -4px; width: 14px; height: 14px; background: var(--red); color: #fff; border-radius: 50%; font-size: 8px; line-height: 14px; text-align: center; cursor: pointer; display: none; }
+.fav-chip:hover .fav-del { display: block; }
+
+/* 收藏按钮 */
+.btn-fav { background: none; border: none; cursor: pointer; font-size: 14px; padding: 0 2px; opacity: 0.4; transition: opacity .2s; }
+.btn-fav:hover, .btn-fav.active { opacity: 1; }
+
+/* 视频库网格 */
+.video-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 10px; margin-top: 10px; }
+.video-card {
+  position: relative; border-radius: 8px; overflow: hidden;
+  background: #141c2b; border: 1px solid rgba(255,255,255,0.08);
+  cursor: pointer; transition: border-color .2s;
+}
+.video-card:hover { border-color: var(--accent); }
+.video-card img { width: 100%; aspect-ratio: 9/16; object-fit: cover; display: block; }
+.video-card video {
+  display: none; position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover;
+}
+.video-card:hover video { display: block; }
+.video-card .vc-info { padding: 6px 8px; font-size: 10px; color: var(--txt2); }
+.video-card .vc-row { color: var(--accent); font-weight: 600; }
+.video-empty { color: var(--txt3); text-align: center; padding: 40px; font-size: 13px; }
+</style>
+</head>
+<body>
+
+<!-- ═══ 激活页 ═══════════════════════════════════ -->
+<div id="page-activate" class="page">
+  <div class="logo">I2V 图生视频</div>
+  <div class="subtitle">AI 产品图生视频自动化工具</div>
+  <div class="activate-box">
+    <input id="license-input" type="text" placeholder="请输入许可码 (如 I2V-XXXX-XXXX)" spellcheck="false">
+    <button id="btn-activate" class="btn-primary" style="width:auto;margin:0">激活</button>
+  </div>
+  <div id="activate-msg" class="msg"></div>
+</div>
+
+<!-- ═══ 主页 ═════════════════════════════════════ -->
+<div id="page-main" class="page" style="display:none">
+
+  <div class="topbar">
+    <div class="topbar-title">I2V 图生视频</div>
+    <div class="topbar-right">
+      <span id="license-info" class="license-tag"></span>
+      <button id="btn-logout" class="btn-icon" title="退出">✕</button>
+    </div>
+  </div>
+
+  <div class="tabs">
+    <button class="tab active" data-tab="generate">提示词生成</button>
+    <button class="tab" data-tab="tasks">任务列表</button>
+    <button class="tab" data-tab="batch">批量处理</button>
+  </div>
+
+  <!-- ── 提示词生成 ───────────────────────────── -->
+  <div class="tab-panel active" id="panel-generate">
+    <div class="section">
+      <div class="section-title">批量上传产品图</div>
+      <p class="batch-hint">选择多张产品图，每张图自动生成一组视频提示词并保存到任务列表</p>
+      <div class="drop-zone" id="img-drop">
+        <div>点击或拖放多张产品图到这里</div>
+        <div class="hint">JPG/PNG/WebP，支持多选</div>
+        <input type="file" id="img-input" multiple accept="image/*">
+      </div>
+      <div id="img-previews" class="preview-row"></div>
+      <div id="img-count" class="hint"></div>
+    </div>
+
+    <div class="section">
+      <div class="section-title">提示词输入</div>
+      <textarea id="user-prompt" rows="3" placeholder="输入你的视频创意描述，所有图片共用...&#10;如：新加坡时尚博主在咖啡馆使用产品，温暖灯光，日常Vlog风格"></textarea>
+      <div id="fav-prompts" class="fav-prompts"></div>
+    </div>
+
+    <div class="section">
+      <button id="btn-batch-gen" class="btn-primary" disabled>开始批量生成提示词</button>
+      <button id="btn-one-click" class="btn-hero" disabled>一键生成</button>
+      <div class="progress" id="gen-progress" style="display:none"><div class="progress-fill" id="gen-fill"></div></div>
+      <div id="gen-status" class="hint"></div>
+    </div>
+  </div>
+
+  <!-- ── 任务列表 ─────────────────────────────── -->
+  <div class="tab-panel" id="panel-tasks">
+    <div class="section">
+      <div class="section-title">
+        任务列表 <span id="task-count" class="hint"></span>
+        <div>
+          <button id="btn-refresh" class="btn-small">刷新</button>
+          <button id="btn-clear" class="btn-small" style="color:var(--red)">清空</button>
+        </div>
+      </div>
+      <table>
+        <thead><tr><th style="width:30px">#</th><th style="width:50px">图片</th><th>AI提示词</th><th>输入提示词</th><th style="width:55px">状态</th><th style="width:85px">操作</th></tr></thead>
+        <tbody id="task-body"><tr><td colspan="6" class="empty">暂无任务，请先生成提示词</td></tr></tbody>
+      </table>
+    </div>
+
+    <div class="section" style="margin-top:16px;border-top:1px solid rgba(255,255,255,0.08);padding-top:16px">
+      <div class="section-title">批量去水印下载</div>
+      <p class="batch-hint">选择已生成的视频，去除水印后下载到本地，同时上传到数据库</p>
+      <div class="btn-row">
+        <button id="btn-download-all" class="btn-primary" style="width:auto;flex:1">批量去水印下载</button>
+      </div>
+      <div id="download-status" class="hint"></div>
+    </div>
+  </div>
+
+  <!-- ── 批量处理 ─────────────────────────────── -->
+  <div class="tab-panel" id="panel-batch">
+    <div class="section">
+      <div class="stats">
+        <div class="stat"><span id="st-total" class="num">0</span><span class="lbl">总计</span></div>
+        <div class="stat"><span id="st-done" class="num green">0</span><span class="lbl">完成</span></div>
+        <div class="stat"><span id="st-pending" class="num amber">0</span><span class="lbl">待处理</span></div>
+        <div class="stat"><span id="st-error" class="num red">0</span><span class="lbl">失败</span></div>
+      </div>
+    </div>
+
+    <div class="section">
+      <div class="section-title">批量视频生成</div>
+      <p class="batch-hint">确保已在浏览器中打开 Google Flow 项目页面并登录。点击开始后，扩展会自动为每个任务上传图片、输入提示词、触发视频生成。</p>
+      <div class="btn-row">
+        <button id="btn-start" class="btn-primary" style="width:auto;flex:1">开始生成</button>
+        <button id="btn-stop" class="btn-danger" disabled style="flex:1">停止</button>
+      </div>
+      <div class="progress" id="batch-progress" style="display:none"><div class="progress-fill" id="batch-fill"></div></div>
+      <div id="batch-info" class="hint"></div>
+    </div>
+
+    <div class="section">
+      <div class="section-title">实时日志</div>
+      <div id="log-box" class="log-box"></div>
+    </div>
+
+    <div class="section" style="margin-top:12px;border-top:1px solid rgba(255,255,255,0.08);padding-top:12px">
+      <div class="section-title">故障排除</div>
+      <p class="batch-hint">如果多条视频生成失败（400/403 错误），可能是 Flow 会话过期，清除浏览器缓存后重新登录再试。</p>
+      <button id="btn-clear-cache" class="btn-small" style="color:var(--amber);border-color:var(--amber)">清除 Flow 缓存并刷新</button>
+      <div id="cache-status" class="hint" style="margin-top:6px"></div>
+    </div>
+  </div>
+
+</div>
+
+<script src="popup.js"></script>
+</body>
+</html>
