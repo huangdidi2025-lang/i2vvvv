@@ -56,17 +56,35 @@ export async function attach(tab, port = DEFAULT_PORT) {
       frameId: context.auxData?.frameId,
     });
   });
+  await client.Page.enable();
   await client.Runtime.enable();
   // Runtime.enable synchronously emits executionContextCreated for existing
   // contexts, but the events may arrive on the next microtask — wait a tick.
   await new Promise(r => setTimeout(r, 100));
-  // Main world: the default context on the top frame (isDefault true, type 'default')
-  const mainContext = contexts.find(c => c.isDefault && c.type === 'default');
-  // Isolated world: non-default context on the top frame (type 'isolated')
-  // There can be multiple isolated worlds (one per content script from each
-  // extension). We prefer one whose name matches our extension, else first.
+  // Main world: the default context on the TOP frame.
+  // Pages can host hidden iframes (about:blank, sandboxes, oauth) which also
+  // expose default contexts. Use Page.getFrameTree to find the top frameId,
+  // then match by frameId — this is the only reliable way for same-origin
+  // iframes.
+  let topFrameId = null;
+  try {
+    const tree = await client.Page.getFrameTree();
+    topFrameId = tree?.frameTree?.frame?.id;
+  } catch {}
+  const defaultContexts = contexts.filter(c => c.isDefault && c.type === 'default');
+  const mainContext =
+    (topFrameId && defaultContexts.find(c => c.frameId === topFrameId)) ||
+    defaultContexts[0] ||
+    null;
+  // Isolated world: non-default context (type 'isolated'). One per content
+  // script per extension. Prefer one whose name matches our extension. Among
+  // duplicates (extension reload leaves stale contexts), pick the one with
+  // the highest id (= newest).
   const isolatedContexts = contexts.filter(c => c.type === 'isolated');
-  const i2vContext = isolatedContexts.find(c => /i2v|图生视频/i.test(c.name || '')) || isolatedContexts[0];
+  const i2vContexts = isolatedContexts
+    .filter(c => /i2v|图生视频/i.test(c.name || ''))
+    .sort((a, b) => b.id - a.id);
+  const i2vContext = i2vContexts[0] || isolatedContexts[0];
   client.__i2v = {
     contexts,
     mainContextId: mainContext?.id,
