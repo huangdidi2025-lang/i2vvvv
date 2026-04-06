@@ -1308,6 +1308,7 @@ const SELECTOR_RULES = Object.freeze({
   video_card_links: {
     description: "视频卡片链接（含成功+失败状态，不含参考图卡）",
     used_by: ["getAllVideoCards", "clickVideoCardByUuid"],
+    only_on: "project_page", // edit pages do not list other cards
     strategies: [
       // Strategy 0 (legacy): parent has play button. Misses failed-state cards.
       { type: "combo", fn: () => Array.from(document.querySelectorAll('a[href*="/edit/"]'))
@@ -1335,6 +1336,7 @@ const SELECTOR_RULES = Object.freeze({
   history_steps: {
     description: "编辑页的 history-step（判断是否已延伸）",
     used_by: ["checkVideoExtendedFromDOM"],
+    only_on: "video_edit_page", // not on project page or image-edit page
     strategies: [
       { type: "css", selector: '[id^="history-step-"]' },
     ],
@@ -1381,13 +1383,17 @@ function findByRules(key) {
 function detectPageKind() {
   const path = location.pathname || '';
   if (/\/project\/[^/]+\/edit\//.test(path)) {
-    // Inside an edit page. Distinguish video vs image by presence of
-    // history-step elements or a video element.
-    if (document.querySelector('[id^="history-step-"]')) return 'video_edit_page';
+    // Inside an edit page. Distinguish video vs image by what edit affordances
+    // are visible. A real video-edit page has an Extend button. An image-edit
+    // page (or a retry-pending card opened in edit view) has Nano Banana model
+    // and crop/draw tools but no Extend button. Fall back to history-step or
+    // <video> presence only as a last resort.
+    const btnTexts = Array.from(document.querySelectorAll('button')).map(b => (b.textContent || ''));
+    const hasExtend = btnTexts.some(t => t.toLowerCase().includes('extend'));
+    if (hasExtend) return 'video_edit_page';
+    if (btnTexts.some(t => /Nano Banana|Crop|Draw/.test(t))) return 'image_edit_page';
     if (document.querySelector('video')) return 'video_edit_page';
-    // Image-edit pages typically show crop/draw buttons and Nano Banana model
-    const btns = Array.from(document.querySelectorAll('button')).map(b => b.textContent || '');
-    if (btns.some(t => /Nano Banana|Crop|Draw/.test(t))) return 'image_edit_page';
+    if (document.querySelector('[id^="history-step-"]')) return 'video_edit_page';
     return 'unknown';
   }
   if (/\/project\/[^/]+/.test(path)) return 'project_page';
