@@ -216,13 +216,14 @@ function withRetry(fn, context, retries = 3) {
 
 // ═══ 本地行状态更新（同步到任务列表 UI）═══════════════════
 
-async function updateRowStatus(rowN, status) {
+async function updateRowStatus(rowN, status, patch) {
   try {
     const { i2v_rows: rows } = await chrome.storage.local.get("i2v_rows");
     if (!rows) return;
     const row = rows.find(r => r.row_n === rowN);
     if (row) {
       row.status = status;
+      if (patch && typeof patch === 'object') Object.assign(row, patch);
       await chrome.storage.local.set({ i2v_rows: rows });
     }
   } catch {}
@@ -268,8 +269,16 @@ async function handleStartI2V(rows, limit) {
   if (rows?.length) {
     state.rows = rows;
   } else {
-    const data = await chrome.storage.local.get("i2v_rows");
-    state.rows = (data.i2v_rows || []).filter(r => r.segment_1 && !r.generated_video);
+    // Storage fallback: 必须合并 i2v_images，否则 imageBlobUrl 缺失导致上传失败
+    const data = await chrome.storage.local.get(["i2v_rows", "i2v_images"]);
+    const imgStore = data.i2v_images || {};
+    state.rows = (data.i2v_rows || [])
+      .filter(r => r.segment_1 && !r.generated_video)
+      .map(r => {
+        const img = r.image_base64 || imgStore[r.row_n]?.image_base64 || '';
+        return { ...r, image_base64: img, imageBlobUrl: img };
+      })
+      .filter(r => r.imageBlobUrl); // 没图就跳过，避免无谓重试
   }
 
   if (limit && limit > 0 && limit < state.rows.length) {
@@ -441,6 +450,7 @@ async function runPhase1Batch(batchRows) {
           successRows.push(row);
           state.doneCount++;
           pushLog(`行 ${row.row_n} — UUID: ${newUuid.slice(0, 8)}...`);
+          await updateRowStatus(row.row_n, "submitted", { _uuid: newUuid });
           syncRow({ row_n: row.row_n, status: "submitted", uuid: newUuid });
         } else {
           // 没找到新卡 → 计入失败重试
@@ -553,6 +563,16 @@ async function runPhase2Extend(successRows) {
       } else {
         pushLog(`行 ${row.row_n} — 延伸失败: ${ext?.error || '未知错误'}`);
       }
+
+      // 点击 Done 让 Flow 把延伸固化（必须，否则项目页 kebab 下载不到 15s 完整版）
+      try {
+        const doneRes = await sendToContent(tab.id, { action: "click_done" }, 8000);
+        if (doneRes?.success) pushLog(`行 ${row.row_n} — Done ✓`);
+        else pushLog(`行 ${row.row_n} — Done 失败: ${doneRes?.error || '未知'}`);
+      } catch (e) {
+        pushLog(`行 ${row.row_n} — Done 异常: ${e.message}`);
+      }
+      await sleep(1500);
 
       // 返回项目页，继续下一个
       await sendToContent(tab.id, { action: "navigate_back" }).catch(() => {});
@@ -832,7 +852,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         return sendResponse(await generatePrompts(msg.images_base64, msg.prompt));
 
       case "download_videos":
-        return sendResponse(await handleDownloadVideos(msg.row_ns));
+        return sendResponse(await handleDownloadVideos(msg.row_ns, msg.sub_path));
 
       case "regen_video":
         return sendResponse(await handleRegenVideo(msg.uuid));
@@ -868,39 +888,157 @@ async function generatePrompts(imagesBase64, prompt) {
 
 // ═══ 批量去水印下载 ══════════════════════════════════════
 
-async function handleDownloadVideos(rowNs) {
+// chrome.debugger 驱动 trusted click — 走 Flow 原生 kebab → Download → 720p 流程
+// 唯一能拿 15s 完整版的路径（simulateClick 过不了 user gesture trust）
+async function debuggerClick(tabId, x, y) {
+  await chrome.debugger.sendCommand({ tabId }, 'Input.dispatchMouseEvent', { type: 'mouseMoved', x, y });
+  await chrome.debugger.sendCommand({ tabId }, 'Input.dispatchMouseEvent', { type: 'mousePressed', x, y, button: 'left', clickCount: 1 });
+  await chrome.debugger.sendCommand({ tabId }, 'Input.dispatchMouseEvent', { type: 'mouseReleased', x, y, button: 'left', clickCount: 1 });
+}
+
+async function evalInTab(tabId, expression) {
+  const r = await chrome.debugger.sendCommand({ tabId }, 'Runtime.evaluate', {
+    expression, returnByValue: true, awaitPromise: true,
+  });
+  return r?.result?.value;
+}
+
+async function triggerCardDownloadViaDebugger(tabId, uuid) {
+  // attach (idempotent)
+  let attached = false;
+  try {
+    await chrome.debugger.attach({ tabId }, '1.3');
+    attached = true;
+  } catch (e) {
+    if (!/already attached/i.test(e.message)) throw e;
+  }
+  try {
+    // 1. 找卡片中心 + hover
+    const cardPos = await evalInTab(tabId, `(()=>{const a=document.querySelector('a[href*="${uuid}"]');if(!a)return null;const r=a.getBoundingClientRect();return {x:r.x+r.width/2,y:r.y+r.height/2}})()`);
+    if (!cardPos) throw new Error('找不到卡片');
+    // 真实 mouse move 到卡中心 → 触发 hover → kebab 渲染
+    // 先移到一个无关位置 → 再移到卡心，避免「已经在卡上但 hover state 没刷新」
+    await chrome.debugger.sendCommand({ tabId }, 'Input.dispatchMouseEvent', { type: 'mouseMoved', x: 10, y: 10 });
+    await sleep(200);
+    await chrome.debugger.sendCommand({ tabId }, 'Input.dispatchMouseEvent', { type: 'mouseMoved', x: cardPos.x, y: cardPos.y });
+    await sleep(2500);
+    // 2. 找 kebab (more_vert，hover 后渲染)
+    const kebab = await retryEval(tabId, `(()=>{const all=Array.from(document.querySelectorAll('button')).filter(b=>/more_vert/.test(b.textContent||''));const cardA=document.querySelector('a[href*="${uuid}"]');if(!cardA)return null;const cr=cardA.getBoundingClientRect();const k=all.find(b=>{const r=b.getBoundingClientRect();return r.y>cr.top&&r.y<cr.bottom&&Math.abs(r.x-cr.right)<150});if(!k)return null;const r=k.getBoundingClientRect();return {x:r.x+r.width/2,y:r.y+r.height/2}})()`, 5000);
+    if (!kebab) throw new Error('hover 后未找到 kebab');
+    await debuggerClick(tabId, kebab.x, kebab.y);
+    await sleep(800);
+    // 3. 点 Download 菜单项
+    const dl = await retryEval(tabId, `(()=>{const m=Array.from(document.querySelectorAll('[role="menuitem"]')).find(x=>/download/i.test(x.textContent||''));if(!m)return null;const r=m.getBoundingClientRect();return {x:r.x+r.width/2,y:r.y+r.height/2}})()`, 4000);
+    if (!dl) throw new Error('未找到 Download 菜单项');
+    await debuggerClick(tabId, dl.x, dl.y);
+    await sleep(800);
+    // 4. 点 720p Original Size
+    const q = await retryEval(tabId, `(()=>{const m=Array.from(document.querySelectorAll('[role="menuitem"]')).find(x=>(x.textContent||'').includes('720p'));if(!m)return null;const r=m.getBoundingClientRect();return {x:r.x+r.width/2,y:r.y+r.height/2}})()`, 4000);
+    if (!q) throw new Error('未找到 720p 选项');
+    await debuggerClick(tabId, q.x, q.y);
+    return { ok: true };
+  } finally {
+    if (attached) {
+      try { await chrome.debugger.detach({ tabId }); } catch {}
+    }
+  }
+}
+
+async function retryEval(tabId, expr, timeoutMs) {
+  const start = Date.now();
+  while (Date.now() - start < timeoutMs) {
+    const v = await evalInTab(tabId, expr);
+    if (v) return v;
+    await sleep(200);
+  }
+  return null;
+}
+
+// 用 onDeterminingFilename 拦截 Flow 原生下载并改名/落到 subPath
+let _pendingDownload = null;
+const _completedDownloads = new Set(); // 已完成的 download id（捕获后立即追踪 onChanged）
+chrome.downloads.onDeterminingFilename.addListener((item, suggest) => {
+  if (_pendingDownload && /\.mp4$/i.test(item.filename || '') && !/i2v_row_\d+/.test(item.filename)) {
+    const target = _pendingDownload.target;
+    _pendingDownload.captured = { id: item.id, originalFilename: item.filename };
+    suggest({ filename: target, conflictAction: 'uniquify' });
+    return true;
+  }
+  return false;
+});
+// 全局监听 onChanged，记录所有 complete 的 id（避免 listener 注册时机错过事件）
+chrome.downloads.onChanged.addListener((delta) => {
+  if (delta.state?.current === 'complete') _completedDownloads.add(delta.id);
+  if (delta.state?.current === 'interrupted') _completedDownloads.add(delta.id); // 也算结束
+});
+
+async function waitForDownloadComplete(downloadId, timeoutMs = 120000) {
+  // 1. 已完成立即返回
+  if (_completedDownloads.has(downloadId)) { _completedDownloads.delete(downloadId); return; }
+  // 2. 主动 search 检查（防止 onChanged 监听时机错过）
+  const start = Date.now();
+  while (Date.now() - start < timeoutMs) {
+    if (_completedDownloads.has(downloadId)) { _completedDownloads.delete(downloadId); return; }
+    const items = await new Promise(r => chrome.downloads.search({ id: downloadId }, r));
+    if (items?.[0]?.state === 'complete') { _completedDownloads.delete(downloadId); return; }
+    if (items?.[0]?.state === 'interrupted') throw new Error(`下载 ${downloadId} 中断`);
+    await sleep(500);
+  }
+  throw new Error(`下载 ${downloadId} 超时`);
+}
+
+async function handleDownloadVideos(rowNs, subPath) {
   if (!rowNs?.length) return { error: "没有要下载的行" };
 
   const { i2v_rows: rows } = await chrome.storage.local.get("i2v_rows");
   if (!rows) return { error: "没有任务数据" };
+  // 清理 subPath：去除前后斜杠 + 禁止 .. 越级
+  const safeSub = (subPath || '').replace(/^\/+|\/+$/g, '').replace(/\.\.+/g, '');
 
   let downloaded = 0;
   for (const rowN of rowNs) {
     const row = rows.find(r => r.row_n === rowN);
     if (!row) continue;
 
-    const videoUrl = row.generated_video || row.video_url;
-    if (!videoUrl) continue;
+    if (!row._uuid) {
+      pushLog(`行 ${rowN} — 缺 _uuid，跳过`);
+      continue;
+    }
 
     try {
-      // 用 chrome.downloads.download 下载视频
-      const filename = `i2v_row_${rowN}_${Date.now()}.mp4`;
-      await new Promise((resolve, reject) => {
-        chrome.downloads.download({
-          url: videoUrl,
-          filename: filename,
-          saveAs: downloaded === 0, // 第一个弹选择文件夹对话框
-        }, (downloadId) => {
-          if (chrome.runtime.lastError) reject(new Error(chrome.runtime.lastError.message));
-          else resolve(downloadId);
-        });
-      });
+      const tab = await getFlowTab();
+      // 必须在项目页（不是 edit 页）才能 hover 卡片
+      if (/\/edit\//.test(tab.url || '')) {
+        await ensureContentScript(tab.id);
+        await sendToContent(tab.id, { action: "navigate_back" });
+        await sleep(3500);
+      }
+      // 设置 download 拦截目标
+      const baseName = `i2v_row_${rowN}_${Date.now()}.mp4`;
+      const target = safeSub ? `${safeSub}/${baseName}` : baseName;
+      _pendingDownload = { target, captured: null };
+      // 触发 Flow 原生 kebab → Download → 720p
+      pushLog(`行 ${rowN} — 触发 Flow 原生下载 (chrome.debugger)`);
+      await triggerCardDownloadViaDebugger(tab.id, row._uuid);
+      // 等 onDeterminingFilename 捕获
+      const start = Date.now();
+      while (!_pendingDownload.captured && Date.now() - start < 30000) await sleep(300);
+      if (!_pendingDownload.captured) {
+        pushLog(`行 ${rowN} — 30s 内未捕获到 Flow 下载事件`);
+        _pendingDownload = null;
+        continue;
+      }
+      const dlId = _pendingDownload.captured.id;
+      _pendingDownload = null;
+      // 等下载完成
+      await waitForDownloadComplete(dlId, 120000);
+      pushLog(`行 ${rowN} — ✓ 下载完成 → ${target}`);
+      // 持久化文件名（相对 Downloads）
+      await updateRowStatus(rowN, "done", { generated_video_file: target });
       downloaded++;
-
-      // 同步到数据库
       syncRow({ row_n: rowN, status: "downloaded", video_downloaded: true });
-
     } catch (e) {
+      _pendingDownload = null;
       pushLog(`行 ${rowN} 下载失败: ${e.message}`);
     }
   }

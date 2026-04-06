@@ -571,31 +571,52 @@ async function clickVideoCardByUuid(uuid) {
 // ── Phase 2b：获取 edit 页的视频 URL ──────────────────────────────────────────
 
 async function getVideoUrl() {
-  log("寻找视频 URL...");
+  log("寻找视频 URL（优先延伸段）...");
   // 先等下载按钮出现，确认视频已生成完毕
   await waitFor(findDownloadButton, 30000, 500)
     .catch(() => { throw new Error("找不到 Download 按钮，视频可能未生成（30s）"); });
 
-  // 找 <video src="https://..."> 元素
-  const video = await waitFor(() => {
-    const v = document.querySelector("video[src]");
-    if (v && v.src && v.src.startsWith("http")) return v;
-    return null;
-  }, 10000, 500).catch(() => null);
+  // 用户内容 URL 都走 trpc media redirect；UI 静态资源（如 flow_camera/Back.mp4）需排除
+  const isUserVideo = (src) =>
+    !!src && src.startsWith('http') && /media\.getMediaUrlRedirect|\.googleusercontent\.com/.test(src);
 
-  if (video) {
-    log(`✓ 找到 video.src: ${video.src.substring(0, 80)}`);
-    return { success: true, url: video.src };
+  // 等 history-step 出现（延伸视频会创建第二个 step），最多等 8 秒
+  await waitFor(() => {
+    const s = document.querySelectorAll('[id^="history-step-"]');
+    return s.length > 0 ? s : null;
+  }, 8000, 300).catch(() => null);
+
+  // 策略 1：history-step 容器内找最后一段的 user video
+  const steps = document.querySelectorAll('[id^="history-step-"]');
+  if (steps.length > 0) {
+    for (let i = steps.length - 1; i >= 0; i--) {
+      const v = steps[i].querySelector('video[src]');
+      if (v && isUserVideo(v.src)) {
+        log(`✓ history-step ${i + 1}/${steps.length} → ${v.src.substring(0, 80)}`);
+        return { success: true, url: v.src, fromExtended: i > 0 };
+      }
+    }
   }
 
-  // 备用：找 <source src="..."> in video
-  const source = document.querySelector("video source[src]");
-  if (source && source.src.startsWith("http")) {
-    log(`✓ 找到 source.src: ${source.src.substring(0, 80)}`);
-    return { success: true, url: source.src };
+  // 策略 2：全页 video[src]，仅保留 user video，取最后一个
+  const all = Array.from(document.querySelectorAll('video[src]')).filter(v => isUserVideo(v.src));
+  if (all.length > 0) {
+    const v = all[all.length - 1];
+    log(`✓ user video (${all.length} found, picked last): ${v.src.substring(0, 80)}`);
+    return { success: true, url: v.src, fromExtended: all.length > 1 };
   }
 
-  throw new Error("页面中找不到视频元素（video[src]）");
+  // 降级：再等一拍后取第一个 user video
+  const v = await waitFor(() => {
+    const arr = Array.from(document.querySelectorAll('video[src]')).filter(x => isUserVideo(x.src));
+    return arr.length ? arr[0] : null;
+  }, 5000, 300).catch(() => null);
+  if (v) {
+    log(`✓ 降级取第一个 user video: ${v.src.substring(0, 80)}`);
+    return { success: true, url: v.src };
+  }
+
+  throw new Error("页面中找不到用户视频元素（video[src] 全部为 UI 静态资源）");
 }
 
 // ── Phase 2b（备用）：在 edit 页点击 Download ──────────────────────────────────
@@ -875,16 +896,81 @@ async function extendVideo(segment2Prompt) {
 
 async function clickDoneButton() {
   log("查找 Done 按钮...");
+  // 实际 DOM: <button>check Done</button>（图标 + 文字拼接），用 includes
   const doneBtn = Array.from(document.querySelectorAll('button'))
-    .find(b => b.textContent?.trim().toLowerCase() === 'done');
+    .find(b => !b.disabled && b.offsetParent !== null && /\bDone\b/.test(b.textContent || ''));
   if (doneBtn) {
-    doneBtn.click();
-    log("✓ 已点击 Done 按钮");
-    await sleep(2000);
+    simulateClick(doneBtn);
+    log("✓ 已点击 Done 按钮（simulateClick）");
+    await sleep(2500);
     return { success: true };
   }
   log("⚠ 未找到 Done 按钮");
   return { success: false, error: "未找到 Done 按钮" };
+}
+
+// ── 项目页：点 kebab → Download → 720p，让 Flow 自己生成 15s 完整版 ──
+async function flowNativeDownloadCard(uuid, quality = '720p') {
+  log(`触发 Flow 原生下载: uuid=${uuid?.slice(0,8)}, quality=${quality}`);
+  if (!uuid) return { success: false, error: '缺少 uuid' };
+
+  // 1. 找卡片 anchor
+  const anchor = document.querySelector(`a[href*="${uuid}"]`);
+  if (!anchor) return { success: false, error: '找不到卡片 anchor' };
+
+  // 2. 上溯找到 card 容器（含 hover 触发）
+  let card = anchor;
+  for (let i = 0; i < 6 && card.parentElement; i++) card = card.parentElement;
+
+  // 3. 在 card 中心位置发完整 hover 事件序列到 elementFromPoint
+  const cardRect = anchor.getBoundingClientRect();
+  const cx = cardRect.left + cardRect.width / 2;
+  const cy = cardRect.top + cardRect.height / 2;
+  const target = document.elementFromPoint(cx, cy) || anchor;
+  const hoverOpts = { bubbles: true, cancelable: true, view: window, clientX: cx, clientY: cy, pointerId: 1, pointerType: 'mouse' };
+  // 路径上的所有祖先都收到 enter/over（React listens for both）
+  for (const evt of ['pointerover', 'pointerenter', 'mouseover', 'mouseenter', 'pointermove', 'mousemove']) {
+    target.dispatchEvent(evt.includes('pointer') ? new PointerEvent(evt, hoverOpts) : new MouseEvent(evt, hoverOpts));
+  }
+  await sleep(1200);
+
+  // 4. 在文档全局范围找 card 关联的 more_vert kebab（hover 后才进 DOM）
+  const kebab = await waitFor(() => {
+    // 优先找 card 容器内的
+    let k = Array.from(card.querySelectorAll('button')).find(b => /more_vert/.test(b.textContent || ''));
+    if (k) return k;
+    // 降级：document 全局
+    const all = Array.from(document.querySelectorAll('button')).filter(b => /more_vert/.test(b.textContent || ''));
+    // 排除已在顶部 toolbar 的（y < 60），只取 hover 后新出现的
+    const candidates = all.filter(b => {
+      const r = b.getBoundingClientRect();
+      return r.y > 60 && Math.abs(r.x - cardRect.right) < 100;
+    });
+    return candidates[0] || null;
+  }, 5000, 200).catch(() => null);
+  if (!kebab) return { success: false, error: '未找到 kebab(more_vert) — hover 未触发 React 渲染' };
+  simulateClick(kebab);
+  await sleep(800);
+
+  // 5. 点击 menu 里的 Download
+  const dlItem = await waitFor(() => {
+    return Array.from(document.querySelectorAll('[role="menuitem"]'))
+      .find(m => /download/i.test(m.textContent || ''));
+  }, 5000, 200).catch(() => null);
+  if (!dlItem) return { success: false, error: '未找到 menu Download' };
+  simulateClick(dlItem);
+  await sleep(800);
+
+  // 6. 点击 720p Original Size
+  const qItem = await waitFor(() => {
+    return Array.from(document.querySelectorAll('[role="menuitem"]'))
+      .find(m => (m.textContent || '').includes(quality));
+  }, 5000, 200).catch(() => null);
+  if (!qItem) return { success: false, error: `未找到 ${quality} 选项` };
+  simulateClick(qItem);
+  log(`✓ 已点击 ${quality}，等 Flow 触发下载`);
+  await sleep(1500);
+  return { success: true };
 }
 
 // ── Phase 2d：从 edit 页导航回项目页 ─────────────────────────────────────────
@@ -978,6 +1064,13 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 
   if (msg.action === "click_done") {
     clickDoneButton()
+      .then(sendResponse)
+      .catch(e => sendResponse({ success: false, error: e.message }));
+    return true;
+  }
+
+  if (msg.action === "flow_native_download_card") {
+    flowNativeDownloadCard(msg.uuid, msg.quality || '720p')
       .then(sendResponse)
       .catch(e => sendResponse({ success: false, error: e.message }));
     return true;
@@ -1194,6 +1287,7 @@ try {
     ensureModelSelection,
     extendVideo,
     clickDoneButton,
+    flowNativeDownloadCard,
     navigateBack,
 
     // metadata

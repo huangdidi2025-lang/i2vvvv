@@ -11,7 +11,8 @@
     "tabs",
     "alarms",
     "sidePanel",
-    "downloads"
+    "downloads",
+    "debugger"
   ],
   "host_permissions": [
     "https://labs.google/*"
