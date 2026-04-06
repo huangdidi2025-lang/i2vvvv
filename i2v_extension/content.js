@@ -1151,3 +1151,56 @@ setInterval(injectRegenButtons, 3000);
 setTimeout(injectRegenButtons, 2000);
 
 log(`content.js 已加载  URL: ${location.pathname}`);
+
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Developer-mode exports for i2v-cli (CDP driver)
+// Appended 2026-04-06 for M1. This block ONLY re-exports existing functions on
+// a namespaced global so a developer (or Claude via i2v-cli) can call them
+// from Chrome DevTools Protocol. It adds no new logic. Safe to strip for a
+// production build by deleting everything below this line.
+// ═══════════════════════════════════════════════════════════════════════════
+try {
+  window.__i2v = Object.freeze({
+    // pure DOM queries
+    simulateClick,
+    waitFor,
+    findOpenDialogBtn,
+    findDialog,
+    findUploadBtnInDialog,
+    findFileInput,
+    findTextbox,
+    findGenerateBtn,
+    findIngredientCancelBtn,
+    findDownloadButton,
+    findExtendButton,
+
+    // cache helpers
+    refreshProjectCache,
+    getProjectDataFromCache,
+
+    // actions (side effects!)
+    smartClick,
+    ensureFlowSettings,
+    processRow,
+    clickCardKebab,
+    getAllVideoCards,
+    getEditPagePrompt,
+    clickVideoCardByUuid,
+    getVideoUrl,
+    clickDownload,
+    checkVideoExtended,
+    checkVideoExtendedFromDOM,
+    ensureModelSelection,
+    extendVideo,
+    clickDoneButton,
+    navigateBack,
+
+    // metadata
+    __version: "m1-2026-04-06",
+    __keys() { return Object.keys(window.__i2v).sort(); },
+  });
+  console.log("[i2v] window.__i2v exported for i2v-cli, keys:", Object.keys(window.__i2v).length);
+} catch (e) {
+  console.warn("[i2v] failed to export window.__i2v:", e);
+}
