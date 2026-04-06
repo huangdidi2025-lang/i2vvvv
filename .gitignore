@@ -1,0 +1,5 @@
+
+# Watermark removal binary (36MB, distributed separately)
+i2v-cli/bin/GeminiWatermarkTool-Video.exe
+# Monitor state (runtime)
+i2v-cli/monitor-state.json

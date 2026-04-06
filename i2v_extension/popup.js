@@ -242,7 +242,9 @@ async function loadTasks() {
   if ($('#task-count')) $('#task-count').textContent = `(${rows.length} 个)`;
 
   if (!rows.length) {
-    tbody.innerHTML = '<tr><td colspan="6" class="empty">暂无任务，请先生成提示词</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="7" class="empty">暂无任务，请先生成提示词</td></tr>';
+    wireBatchDownloadToolbar();
+    updateBatchDownloadButton();
     return;
   }
 
@@ -265,7 +267,9 @@ async function loadTasks() {
 
     const isFaved = favPrompts.includes(r.user_prompt || '');
 
+    const canDownload = (st === 'done' || !!r.generated_video) && !!r.generated_video;
     return `<tr>
+      <td><input type="checkbox" class="i2v-row-select" data-row-n="${r.row_n}" ${canDownload ? '' : 'disabled'}></td>
       <td>${r.row_n}</td>
       <td>${thumb}</td>
       <td class="prompt-cell">
@@ -289,6 +293,86 @@ async function loadTasks() {
       </td>
     </tr>`;
   }).join('');
+
+  // 绑定每行复选框 + 工具栏
+  document.querySelectorAll('.i2v-row-select').forEach(cb => {
+    cb.addEventListener('change', updateBatchDownloadButton);
+  });
+  wireBatchDownloadToolbar();
+  updateBatchDownloadButton();
+}
+
+// ═══ 批量下载原视频（勾选 + 全选） ═══════════════════
+
+function getSelectedRowNs() {
+  return Array.from(document.querySelectorAll('.i2v-row-select:checked'))
+    .map(cb => parseInt(cb.dataset.rowN, 10))
+    .filter(n => !isNaN(n));
+}
+
+function updateBatchDownloadButton() {
+  const n = getSelectedRowNs().length;
+  const btn = document.getElementById('i2v-batch-download-btn');
+  if (!btn) return;
+  btn.textContent = n > 0 ? `批量下载 (${n})` : '批量下载';
+  btn.disabled = n === 0;
+
+  // 同步全选 checkbox 状态
+  const all = document.getElementById('i2v-select-all');
+  if (all) {
+    const selectable = document.querySelectorAll('.i2v-row-select:not(:disabled)');
+    const checked = document.querySelectorAll('.i2v-row-select:not(:disabled):checked');
+    all.checked = selectable.length > 0 && checked.length === selectable.length;
+    all.indeterminate = checked.length > 0 && checked.length < selectable.length;
+  }
+}
+
+function toggleSelectAll(checked) {
+  document.querySelectorAll('.i2v-row-select').forEach(cb => {
+    if (!cb.disabled) cb.checked = checked;
+  });
+  updateBatchDownloadButton();
+}
+
+let _i2vToolbarWired = false;
+function wireBatchDownloadToolbar() {
+  if (_i2vToolbarWired) return;
+  const all = document.getElementById('i2v-select-all');
+  const btn = document.getElementById('i2v-batch-download-btn');
+  if (!all || !btn) return;
+  all.addEventListener('change', e => toggleSelectAll(e.target.checked));
+  btn.addEventListener('click', startBatchDownload);
+  _i2vToolbarWired = true;
+}
+
+async function startBatchDownload() {
+  const rowNs = getSelectedRowNs();
+  if (rowNs.length === 0) return;
+  const status = document.getElementById('i2v-batch-download-status');
+  const btn = document.getElementById('i2v-batch-download-btn');
+  if (btn) btn.disabled = true;
+  if (status) status.textContent = `下载中 ${rowNs.length} 个（含视频 URL 拉取，请稍候）...`;
+
+  // 走 background.handleDownloadVideos：自动 lazy fetch URL via _uuid + 持久化 + subPath
+  const dateStr = new Date().toISOString().slice(0, 10);
+  const result = await msg({
+    action: 'download_videos',
+    row_ns: rowNs,
+    sub_path: `i2v/raw/${dateStr}`,
+  });
+
+  if (status) {
+    if (result?.ok) {
+      const n = result.downloaded || 0;
+      status.textContent = n === rowNs.length
+        ? `已完成 ${n}/${rowNs.length}`
+        : `已完成 ${n}/${rowNs.length}（${rowNs.length - n} 行缺 URL，跳过）`;
+    } else {
+      status.textContent = '下载失败: ' + (result?.error || '未知错误');
+    }
+  }
+  updateBatchDownloadButton();
+  await loadTasks(); // 刷新列表显示新落地的 generated_video
 }
 
 function escHtml(s) {

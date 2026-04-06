@@ -91,6 +91,27 @@ td img { width: 50px; height: 38px; }
 .video-card .vc-info { padding: 6px 8px; font-size: 10px; color: var(--txt2); }
 .video-card .vc-row { color: var(--accent); font-weight: 600; }
 .video-empty { color: var(--txt3); text-align: center; padding: 40px; font-size: 13px; }
+
+/* 批量下载工具栏 */
+#i2v-batch-download-toolbar {
+  margin: 8px 0; padding: 8px 10px;
+  background: rgba(47,156,245,0.06);
+  border: 1px solid rgba(47,156,245,0.18);
+  border-radius: 6px;
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+}
+#i2v-batch-download-toolbar label { font-size: 12px; color: var(--txt2); cursor: pointer; user-select: none; }
+#i2v-batch-download-toolbar label input { vertical-align: middle; margin-right: 4px; }
+#i2v-batch-download-btn {
+  background: rgba(47,156,245,0.18); color: #2f9cf5;
+  border: 1px solid rgba(47,156,245,0.35); border-radius: 4px;
+  padding: 4px 12px; font-size: 11px; cursor: pointer; white-space: nowrap;
+}
+#i2v-batch-download-btn:hover:not(:disabled) { background: rgba(47,156,245,0.32); }
+#i2v-batch-download-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+#i2v-batch-download-status { font-size: 11px; color: #6080a0; }
+.i2v-row-select { cursor: pointer; }
+.i2v-row-select:disabled { cursor: not-allowed; opacity: 0.3; }
 </style>
 </head>
 <body>
@@ -161,9 +182,14 @@ td img { width: 50px; height: 38px; }
           <button id="btn-clear" class="btn-small" style="color:var(--red)">清空</button>
         </div>
       </div>
+      <div id="i2v-batch-download-toolbar">
+        <label><input type="checkbox" class="i2v-select-all" id="i2v-select-all">全选</label>
+        <button id="i2v-batch-download-btn" disabled>批量下载</button>
+        <span id="i2v-batch-download-status"></span>
+      </div>
       <table>
-        <thead><tr><th style="width:30px">#</th><th style="width:50px">图片</th><th>AI提示词</th><th>输入提示词</th><th style="width:55px">状态</th><th style="width:85px">操作</th></tr></thead>
-        <tbody id="task-body"><tr><td colspan="6" class="empty">暂无任务，请先生成提示词</td></tr></tbody>
+        <thead><tr><th style="width:24px"></th><th style="width:30px">#</th><th style="width:50px">图片</th><th>AI提示词</th><th>输入提示词</th><th style="width:55px">状态</th><th style="width:85px">操作</th></tr></thead>
+        <tbody id="task-body"><tr><td colspan="7" class="empty">暂无任务，请先生成提示词</td></tr></tbody>
       </table>
     </div>
 
