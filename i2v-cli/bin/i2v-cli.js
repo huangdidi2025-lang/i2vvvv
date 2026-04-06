@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // i2v-cli entry point
-import { listTabs, findFlowTab, attach, evaluate } from '../lib/cdp.js';
+import { listTabs, findFlowTab, attach, evaluate, installMockFetch } from '../lib/cdp.js';
 
 const USAGE = `
 i2v-cli — CDP driver for i2v_extension
@@ -16,6 +16,7 @@ Options:
   --port <n>                   CDP port (default 9222)
   --json                       Output JSON instead of human text
   --world <main|isolated>      Override execution world for eval/call
+  --mock                       Mock i2v-server requests (intercept in isolated world)
 
 Examples:
   i2v-cli connect
@@ -24,12 +25,13 @@ Examples:
 `;
 
 function parseArgs(argv) {
-  const args = { _: [], port: 9222, json: false, world: null };
+  const args = { _: [], port: 9222, json: false, world: null, mock: false };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === '--port') { args.port = parseInt(argv[++i], 10); }
     else if (a === '--json') { args.json = true; }
     else if (a === '--world') { args.world = argv[++i]; }
+    else if (a === '--mock') { args.mock = true; }
     else if (a === '-h' || a === '--help') { args.help = true; }
     else { args._.push(a); }
   }
@@ -67,6 +69,10 @@ async function cmdEval(args) {
   const tab = await findFlowTab(args.port);
   const client = await attach(tab, args.port);
   try {
+    if (args.mock) {
+      const r = await installMockFetch(client);
+      console.error(`[i2v-cli] mock 模式: i2v-server 请求将被拦截 (${r})`);
+    }
     const world = args.world || 'main'; // eval defaults to main world
     const value = await evaluate(client, expression, { world });
     if (args.json) {
@@ -124,6 +130,10 @@ async function cmdCall(args) {
   const tab = await findFlowTab(args.port);
   const client = await attach(tab, args.port);
   try {
+    if (args.mock) {
+      const r = await installMockFetch(client);
+      console.error(`[i2v-cli] mock 模式: i2v-server 请求将被拦截 (${r})`);
+    }
     // window.__i2v is defined in the content script's isolated world, not the
     // page's main world, so `call` must target the isolated context.
     const world = args.world || 'isolated';
@@ -151,6 +161,10 @@ async function cmdContexts(args) {
   const tab = await findFlowTab(args.port);
   const client = await attach(tab, args.port);
   try {
+    if (args.mock) {
+      const r = await installMockFetch(client);
+      console.error(`[i2v-cli] mock 模式: i2v-server 请求将被拦截 (${r})`);
+    }
     const info = client.__i2v;
     if (args.json) {
       console.log(JSON.stringify(info, null, 2));
@@ -172,6 +186,10 @@ async function cmdHealth(args) {
   const tab = await findFlowTab(args.port);
   const client = await attach(tab, args.port);
   try {
+    if (args.mock) {
+      const r = await installMockFetch(client);
+      console.error(`[i2v-cli] mock 模式: i2v-server 请求将被拦截 (${r})`);
+    }
     if (!client.__i2v?.isolatedContextId) {
       console.error('[health error] No isolated world found. Is i2v_extension loaded? Try `i2v-cli contexts`.');
       process.exit(4);

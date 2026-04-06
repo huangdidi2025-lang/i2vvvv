@@ -117,3 +117,68 @@ export async function evaluate(client, expression, { awaitPromise = true, return
   }
   return result.value;
 }
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Mock mode: intercept i2v-server requests in the Flow page's isolated world
+// so dev tests don't hit production. Default off; opt in via --mock CLI flag.
+// ═══════════════════════════════════════════════════════════════════════════
+
+export const MOCK_FETCH_SCRIPT = `
+(() => {
+  if (window.__i2v_mock_installed) return 'already installed';
+  window.__i2v_mock_installed = true;
+  window.__i2v_mock_log = [];
+  const realFetch = window.fetch.bind(window);
+  const PROD_HOST = 'i2v-server.vercel.app';
+  function fakeResponse(url, body) {
+    return new Response(JSON.stringify(body), {
+      status: 200,
+      headers: { 'content-type': 'application/json', 'x-i2v-mock': '1' },
+    });
+  }
+  window.fetch = async function(input, init) {
+    const url = typeof input === 'string' ? input : input.url;
+    if (url && url.includes(PROD_HOST)) {
+      window.__i2v_mock_log.push({ ts: Date.now(), method: init?.method || 'GET', url });
+      if (url.includes('/api/activate'))   return fakeResponse(url, { success: true, code: 'I2V-MOCK', activated_at: new Date().toISOString() });
+      if (url.includes('/api/verify'))     return fakeResponse(url, { success: true, valid: true });
+      if (url.includes('/api/sync-row'))   return fakeResponse(url, { success: true });
+      if (url.includes('/api/save-rows'))  return fakeResponse(url, { success: true, count: 0 });
+      if (url.includes('/api/get-rows'))   return fakeResponse(url, { success: true, rows: [] });
+      if (url.includes('/api/log'))        return fakeResponse(url, { success: true });
+      if (url.includes('/api/generate'))   return fakeResponse(url, {
+        success: true,
+        prompts: [{ segment_1: 'mock segment 1', segment_2: 'mock segment 2', segment_1_zh: '模拟', segment_2_zh: '延伸' }],
+      });
+      return fakeResponse(url, { success: true, _mock: true });
+    }
+    return realFetch(input, init);
+  };
+  return 'installed';
+})()
+`;
+
+export async function installMockFetch(client) {
+  if (!client.__i2v?.isolatedContextId) {
+    throw new Error('installMockFetch: no isolated context available; is i2v_extension loaded?');
+  }
+  const result = await client.Runtime.evaluate({
+    expression: MOCK_FETCH_SCRIPT,
+    contextId: client.__i2v.isolatedContextId,
+    returnByValue: true,
+  });
+  if (result.exceptionDetails) {
+    throw new Error('installMockFetch failed: ' + (result.exceptionDetails.exception?.description || result.exceptionDetails.text));
+  }
+  return result.result.value;
+}
+
+export async function readMockLog(client) {
+  if (!client.__i2v?.isolatedContextId) return [];
+  const result = await client.Runtime.evaluate({
+    expression: 'window.__i2v_mock_log || []',
+    contextId: client.__i2v.isolatedContextId,
+    returnByValue: true,
+  });
+  return result.result.value || [];
+}
