@@ -1,0 +1,20 @@
+{
+  "name": "i2v-cli",
+  "version": "0.1.0",
+  "private": true,
+  "description": "CDP driver CLI for debugging i2v_extension on Google Flow",
+  "type": "module",
+  "bin": {
+    "i2v-cli": "./bin/i2v-cli.js"
+  },
+  "scripts": {
+    "start": "node bin/i2v-cli.js",
+    "test": "node --test test/"
+  },
+  "dependencies": {
+    "chrome-remote-interface": "^0.33.0"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
