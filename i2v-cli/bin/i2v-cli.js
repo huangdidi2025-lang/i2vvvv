@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 // i2v-cli entry point
 import { listTabs, findFlowTab, attach, evaluate, installMockFetch } from '../lib/cdp.js';
+import CDP from 'chrome-remote-interface';
 
 const USAGE = `
 i2v-cli — CDP driver for i2v_extension
@@ -11,6 +12,8 @@ Usage:
   i2v-cli health               Check which selectors still work (drift detection)
   i2v-cli eval <js>            Evaluate JS in the Flow tab (main world by default)
   i2v-cli call <fn> [args...]  Call window.__i2v.<fn>(...args) in the isolated world
+  i2v-cli reload               Reload the i2v extension and refresh Flow tab
+  i2v-cli test <module>        Run a scripted scenario for a single module
 
 Options:
   --port <n>                   CDP port (default 9222)
@@ -264,6 +267,197 @@ function printHealthReport(r) {
   }
 }
 
+async function cmdReload(args) {
+  const port = args.port;
+  // 1. List all service worker targets and find the i2v one by manifest name
+  const targets = await CDP.List({ port });
+  const swCandidates = targets.filter(t => t.type === 'service_worker' && (t.url || '').startsWith('chrome-extension://'));
+  if (swCandidates.length === 0) {
+    console.error('[reload] No extension service workers found.');
+    process.exit(1);
+  }
+  let i2vSw = null;
+  for (const sw of swCandidates) {
+    let probeClient = null;
+    try {
+      probeClient = await CDP({ target: sw.webSocketDebuggerUrl, port });
+      await probeClient.Runtime.enable();
+      const { result } = await probeClient.Runtime.evaluate({
+        expression: '(chrome && chrome.runtime && chrome.runtime.getManifest && chrome.runtime.getManifest().name) || ""',
+        returnByValue: true,
+      });
+      const name = String(result?.value || '');
+      if (/i2v|图生视频/i.test(name)) {
+        i2vSw = sw;
+        console.log(`[reload] found i2v service worker: name="${name}"`);
+        // call chrome.runtime.reload() on this connection
+        try {
+          await probeClient.Runtime.evaluate({ expression: 'chrome.runtime.reload()', awaitPromise: false });
+          console.log('[reload] chrome.runtime.reload() called');
+        } catch (e) {
+          // expected: SW connection drops mid-reload
+        }
+        break;
+      }
+    } catch (e) {
+      // candidate didn't match — try next
+    } finally {
+      try { if (probeClient) await probeClient.close(); } catch {}
+    }
+  }
+  if (!i2vSw) {
+    console.error('[reload] No i2v service worker found among ' + swCandidates.length + ' extension SWs.');
+    console.error('[reload] Probed names did not match /i2v|图生视频/i.');
+    process.exit(2);
+  }
+
+  // 2. Wait for the SW to come back, then reload the Flow tab
+  await new Promise(r => setTimeout(r, 2000));
+  const tabs2 = await CDP.List({ port });
+  const flow = tabs2.find(t => /labs\.google\/fx\/tools\/flow/.test(t.url || ''));
+  if (!flow) {
+    console.log('[reload] no Flow tab open, skipping page refresh');
+    return;
+  }
+  const tabClient = await CDP({ target: flow.webSocketDebuggerUrl, port });
+  try {
+    await tabClient.Page.enable();
+    await tabClient.Page.reload({ ignoreCache: false });
+    console.log('[reload] Flow tab reloaded');
+  } finally {
+    try { await tabClient.close(); } catch {}
+  }
+}
+
+async function cmdTest(args) {
+  const [, module, ...rest] = args._;
+  if (!module) {
+    console.error('Usage: i2v-cli test <module> [args]');
+    console.error('Modules: prompt | generate | cache | navigate | extend | download');
+    console.error('Examples:');
+    console.error('  i2v-cli test prompt --text "hello"');
+    console.error('  i2v-cli test cache');
+    console.error('  i2v-cli test navigate');
+    console.error('  i2v-cli test generate');
+    console.error('  i2v-cli test extend --uuid <uuid>');
+    console.error('  i2v-cli test download --dry-run');
+    process.exit(1);
+  }
+  // Parse extra args (--text "...", --uuid "...", --dry-run)
+  const extra = {};
+  for (let i = 0; i < rest.length; i++) {
+    if (rest[i] === '--text') extra.text = rest[++i];
+    else if (rest[i] === '--uuid') extra.uuid = rest[++i];
+    else if (rest[i] === '--dry-run') extra.dryRun = true;
+  }
+
+  const tab = await findFlowTab(args.port);
+  const client = await attach(tab, args.port);
+  try {
+    if (args.mock) {
+      const r = await installMockFetch(client);
+      console.error(`[i2v-cli] mock 模式: i2v-server 请求将被拦截 (${r})`);
+    }
+    if (!client.__i2v?.isolatedContextId) {
+      console.error('[test error] No isolated world found. Is i2v_extension loaded?');
+      process.exit(4);
+    }
+
+    let expression;
+    switch (module) {
+      case 'prompt': {
+        const text = extra.text || 'i2v-cli test ' + new Date().toISOString();
+        expression = `
+          (async () => {
+            if (!window.__i2v_modules) return { error: 'window.__i2v_modules not found — reload extension' };
+            const inj = await window.__i2v_modules.prompt.injectText(${JSON.stringify(text)});
+            const read = window.__i2v_modules.prompt.read();
+            const expectedSubstring = ${JSON.stringify(text)}.slice(0, 30);
+            return {
+              ok: inj.ok && read.ok && (read.text || '').includes(expectedSubstring),
+              injected: inj,
+              readBack: read,
+              expectedSubstring,
+            };
+          })()
+        `;
+        break;
+      }
+      case 'generate':
+        expression = `
+          (async () => {
+            if (!window.__i2v_modules) return { error: 'window.__i2v_modules not found — reload extension' };
+            return window.__i2v_modules.generate.isReady();
+          })()
+        `;
+        break;
+      case 'cache':
+        expression = `
+          (async () => {
+            if (!window.__i2v_modules) return { error: 'window.__i2v_modules not found — reload extension' };
+            const data = window.__i2v_modules.cache.read();
+            if (!data) return { ok: false, note: 'cache empty or unreadable on current Flow' };
+            return {
+              ok: true,
+              videos: data.videos?.length ?? null,
+              images: data.images?.length ?? null,
+              workflowCount: data.workflowMap ? Object.keys(data.workflowMap).length : null,
+            };
+          })()
+        `;
+        break;
+      case 'navigate':
+        expression = `
+          (async () => {
+            if (!window.__i2v_modules) return { error: 'window.__i2v_modules not found — reload extension' };
+            const uuids = window.__i2v_modules.navigate.listVideoCards();
+            return { ok: true, count: uuids.length, uuids: uuids.slice(0, 10) };
+          })()
+        `;
+        break;
+      case 'extend': {
+        if (!extra.uuid) {
+          console.error('Usage: i2v-cli test extend --uuid <uuid>');
+          process.exit(1);
+        }
+        expression = `
+          (async () => {
+            if (!window.__i2v_modules) return { error: 'window.__i2v_modules not found — reload extension' };
+            return await window.__i2v_modules.extend.isExtended(${JSON.stringify(extra.uuid)});
+          })()
+        `;
+        break;
+      }
+      case 'download':
+        expression = `
+          (async () => {
+            if (!window.__i2v_modules) return { error: 'window.__i2v_modules not found — reload extension' };
+            const url = await window.__i2v_modules.download.getUrl();
+            return { ok: true, url, dryRun: ${extra.dryRun ? 'true' : 'false'} };
+          })()
+        `;
+        break;
+      default:
+        console.error(`Unknown test module: ${module}`);
+        process.exit(1);
+    }
+
+    const value = await evaluate(client, expression, { world: 'isolated' });
+    if (args.json) {
+      console.log(JSON.stringify(value, null, 2));
+      return;
+    }
+    if (value?.error) {
+      console.error('[test error] ' + value.error);
+      process.exit(3);
+    }
+    console.log(`[test ${module}] ` + JSON.stringify(value, null, 2));
+    if (value && value.ok === false) process.exit(1);
+  } finally {
+    await client.close();
+  }
+}
+
 async function main() {
   const args = parseArgs(process.argv.slice(2));
   if (args.help || args._.length === 0) {
@@ -287,6 +481,12 @@ async function main() {
         break;
       case 'health':
         await cmdHealth(args);
+        break;
+      case 'reload':
+        await cmdReload(args);
+        break;
+      case 'test':
+        await cmdTest(args);
         break;
       default:
         console.error(`Unknown command: ${cmd}`);
