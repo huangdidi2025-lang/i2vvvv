@@ -8,6 +8,7 @@ i2v-cli — CDP driver for i2v_extension
 Usage:
   i2v-cli connect              List all tabs and highlight the Flow tab
   i2v-cli contexts             Show execution contexts (main + isolated worlds)
+  i2v-cli health               Check which selectors still work (drift detection)
   i2v-cli eval <js>            Evaluate JS in the Flow tab (main world by default)
   i2v-cli call <fn> [args...]  Call window.__i2v.<fn>(...args) in the isolated world
 
@@ -167,6 +168,80 @@ async function cmdContexts(args) {
   }
 }
 
+async function cmdHealth(args) {
+  const tab = await findFlowTab(args.port);
+  const client = await attach(tab, args.port);
+  try {
+    if (!client.__i2v?.isolatedContextId) {
+      console.error('[health error] No isolated world found. Is i2v_extension loaded? Try `i2v-cli contexts`.');
+      process.exit(4);
+    }
+    // runHealthCheck lives on window.__i2v_health in the isolated world
+    const expression = `
+      (async () => {
+        if (typeof window.__i2v_health === 'undefined') {
+          return { __i2v_error: 'window.__i2v_health not defined. Reload the extension and refresh Flow page.' };
+        }
+        try {
+          return await window.__i2v_health.runHealthCheck();
+        } catch (e) {
+          return { __i2v_error: e.message, stack: e.stack };
+        }
+      })()
+    `;
+    const report = await evaluate(client, expression, { world: 'isolated' });
+    if (report?.__i2v_error) {
+      console.error(`[health error] ${report.__i2v_error}`);
+      if (report.stack) console.error(report.stack);
+      process.exit(3);
+    }
+    if (args.json) {
+      console.log(JSON.stringify(report, null, 2));
+    } else {
+      printHealthReport(report);
+    }
+    // Exit codes: 0 all ok, 1 has fallback warnings, 2 has failures
+    if (report.failed > 0) process.exit(2);
+    if (report.fallback > 0) process.exit(1);
+    process.exit(0);
+  } finally {
+    await client.close();
+  }
+}
+
+function printHealthReport(r) {
+  const okIcon = '[OK]';
+  const warnIcon = '[WARN]';
+  const failIcon = '[FAIL]';
+  console.log(`[i2v health] version ${r.version}`);
+  console.log(`${r.passed} ok  |  ${r.fallback} fallback  |  ${r.failed} failed  (total ${r.total})`);
+  console.log('');
+  for (const d of r.details) {
+    const icon = d.status === 'ok' ? okIcon : d.status === 'fallback' ? warnIcon : failIcon;
+    const strat = d.strategyIndex < 0
+      ? `all ${d.strategyCount} strategies miss`
+      : `strategy ${d.strategyIndex}/${d.strategyCount - 1}`;
+    const elDesc = d.count != null
+      ? `(${d.count} matches)`
+      : d.elementTag
+        ? `${d.elementTag} "${(d.elementText || '').slice(0, 50)}"`
+        : '(no element)';
+    console.log(`${icon} ${d.key.padEnd(24)} [${strat}]  ${elDesc}`);
+    if (d.status !== 'ok') {
+      console.log(`     description: ${d.description}`);
+      console.log(`     used by: ${d.usedBy.join(', ')}`);
+    }
+  }
+  console.log('');
+  if (r.failed > 0) {
+    console.log(`WARNING: ${r.failed} selector(s) fully broken — Flow UI may have changed.`);
+  } else if (r.fallback > 0) {
+    console.log(`NOTE: ${r.fallback} selector(s) using fallback strategy — primary strategy may be stale.`);
+  } else {
+    console.log('All selectors on primary strategy. Flow UI matches expectations.');
+  }
+}
+
 async function main() {
   const args = parseArgs(process.argv.slice(2));
   if (args.help || args._.length === 0) {
@@ -187,6 +262,9 @@ async function main() {
         break;
       case 'contexts':
         await cmdContexts(args);
+        break;
+      case 'health':
+        await cmdHealth(args);
         break;
       default:
         console.error(`Unknown command: ${cmd}`);
