@@ -7,12 +7,14 @@ i2v-cli — CDP driver for i2v_extension
 
 Usage:
   i2v-cli connect              List all tabs and highlight the Flow tab
-  i2v-cli eval <js>            Evaluate JavaScript in the Flow tab
-  i2v-cli call <fn> [args...]  Call window.__i2v.<fn>(...args) in the Flow tab
+  i2v-cli contexts             Show execution contexts (main + isolated worlds)
+  i2v-cli eval <js>            Evaluate JS in the Flow tab (main world by default)
+  i2v-cli call <fn> [args...]  Call window.__i2v.<fn>(...args) in the isolated world
 
 Options:
   --port <n>                   CDP port (default 9222)
   --json                       Output JSON instead of human text
+  --world <main|isolated>      Override execution world for eval/call
 
 Examples:
   i2v-cli connect
@@ -21,11 +23,12 @@ Examples:
 `;
 
 function parseArgs(argv) {
-  const args = { _: [], port: 9222, json: false };
+  const args = { _: [], port: 9222, json: false, world: null };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === '--port') { args.port = parseInt(argv[++i], 10); }
     else if (a === '--json') { args.json = true; }
+    else if (a === '--world') { args.world = argv[++i]; }
     else if (a === '-h' || a === '--help') { args.help = true; }
     else { args._.push(a); }
   }
@@ -63,7 +66,8 @@ async function cmdEval(args) {
   const tab = await findFlowTab(args.port);
   const client = await attach(tab, args.port);
   try {
-    const value = await evaluate(client, expression);
+    const world = args.world || 'main'; // eval defaults to main world
+    const value = await evaluate(client, expression, { world });
     if (args.json) {
       console.log(JSON.stringify(value, null, 2));
     } else {
@@ -119,7 +123,14 @@ async function cmdCall(args) {
   const tab = await findFlowTab(args.port);
   const client = await attach(tab, args.port);
   try {
-    const value = await evaluate(client, expression);
+    // window.__i2v is defined in the content script's isolated world, not the
+    // page's main world, so `call` must target the isolated context.
+    const world = args.world || 'isolated';
+    if (world === 'isolated' && !client.__i2v?.isolatedContextId) {
+      console.error('[call error] No isolated world found. Is the i2v_extension loaded on this page? Try `i2v-cli contexts` to diagnose.');
+      process.exit(4);
+    }
+    const value = await evaluate(client, expression, { world });
     if (args.json) {
       console.log(JSON.stringify(value, null, 2));
       return;
@@ -130,6 +141,27 @@ async function cmdCall(args) {
       process.exit(3);
     }
     console.log(JSON.stringify(value, null, 2));
+  } finally {
+    await client.close();
+  }
+}
+
+async function cmdContexts(args) {
+  const tab = await findFlowTab(args.port);
+  const client = await attach(tab, args.port);
+  try {
+    const info = client.__i2v;
+    if (args.json) {
+      console.log(JSON.stringify(info, null, 2));
+      return;
+    }
+    console.log(`Tab: ${tab.url}`);
+    console.log(`Main world contextId: ${info.mainContextId ?? '(none)'}`);
+    console.log(`Isolated world contextId: ${info.isolatedContextId ?? '(none)'}`);
+    console.log(`All contexts (${info.contexts.length}):`);
+    for (const c of info.contexts) {
+      console.log(`  [${c.id}] type=${c.type} isDefault=${c.isDefault} name=${JSON.stringify(c.name)} origin=${c.origin}`);
+    }
   } finally {
     await client.close();
   }
@@ -152,6 +184,9 @@ async function main() {
         break;
       case 'call':
         await cmdCall(args);
+        break;
+      case 'contexts':
+        await cmdContexts(args);
         break;
       default:
         console.error(`Unknown command: ${cmd}`);
