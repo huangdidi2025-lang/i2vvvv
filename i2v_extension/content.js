@@ -1204,3 +1204,211 @@ try {
 } catch (e) {
   console.warn("[i2v] failed to export window.__i2v:", e);
 }
+
+
+// ═══════════════════════════════════════════════════════════════════════════
+// M2: Data-driven selectors + health check
+// Appended 2026-04-06 for M2. Defines SELECTOR_RULES (a declarative rule table),
+// findByRules() (multi-strategy fallback finder), and runHealthCheck() (reports
+// which selectors still work on the current Flow DOM). Exposed on the new
+// window.__i2v_health global so callers (e.g. i2v-cli health) can query drift.
+//
+// window.__i2v (from M1) is Object.freeze'd and cannot be extended, so this
+// uses a separate namespace.
+// ═══════════════════════════════════════════════════════════════════════════
+const SELECTOR_RULES = Object.freeze({
+  open_upload_dialog_btn: {
+    description: "底部输入栏旁的 + 按钮，打开上传对话框",
+    used_by: ["findOpenDialogBtn", "processRow step 1"],
+    strategies: [
+      { type: "css", selector: 'button[aria-haspopup="dialog"]' },
+      { type: "combo", fn: () => Array.from(document.querySelectorAll('button[aria-haspopup]'))
+          .find(b => { const t = b.textContent.toLowerCase(); return (t.includes('add') || t.includes('create')) && !t.includes('add media'); }) },
+    ],
+  },
+  dialog: {
+    description: "任意已打开的对话框",
+    used_by: ["findDialog"],
+    strategies: [
+      { type: "css", selector: '[role="dialog"]' },
+    ],
+  },
+  file_input: {
+    description: "文件上传 input[type=file]",
+    used_by: ["findFileInput"],
+    strategies: [
+      { type: "css", selector: 'input[type="file"][accept="image/*"]' },
+      { type: "css", selector: 'input[type="file"]' },
+    ],
+  },
+  prompt_textbox: {
+    description: "主提示词输入框（Lexical contenteditable）",
+    used_by: ["findTextbox", "processRow step 3"],
+    strategies: [
+      { type: "combo", fn: () => {
+        const all = Array.from(document.querySelectorAll('[role="textbox"]'));
+        return all.find(tb => tb.getAttribute('aria-label') !== 'Editable text' && tb.textContent.includes('What do you want to create?'));
+      }},
+      { type: "combo", fn: () => {
+        const all = Array.from(document.querySelectorAll('[role="textbox"]'));
+        return all.find(tb => tb.getAttribute('aria-multiline') === 'true' && tb.getAttribute('aria-label') !== 'Editable text');
+      }},
+      { type: "combo", fn: () => {
+        const all = Array.from(document.querySelectorAll('[role="textbox"]'));
+        const filtered = all.filter(tb => tb.getAttribute('aria-label') !== 'Editable text');
+        return filtered[filtered.length - 1] || null;
+      }},
+    ],
+  },
+  generate_btn: {
+    description: "生成按钮（arrow_forward 图标）",
+    used_by: ["findGenerateBtn", "processRow step 4"],
+    strategies: [
+      { type: "combo", fn: () => Array.from(document.querySelectorAll('button'))
+          .find(b => b.textContent.includes('arrow_forward') && !b.disabled && b.getAttribute('aria-disabled') !== 'true') },
+      { type: "text", tag: "button", contains: "Create", excludeDisabled: true },
+    ],
+  },
+  ingredient_cancel_btn: {
+    description: "Ingredient 取消按钮",
+    used_by: ["findIngredientCancelBtn"],
+    strategies: [
+      { type: "combo", fn: () => Array.from(document.querySelectorAll('button'))
+          .find(b => b.textContent.trim() === 'cancel' || b.title === 'cancel') },
+    ],
+  },
+  download_btn: {
+    description: "下载按钮（edit 页）",
+    used_by: ["findDownloadButton"],
+    strategies: [
+      { type: "combo", fn: () => Array.from(document.querySelectorAll('button'))
+          .find(b => b.textContent.toLowerCase().includes('download') && !b.disabled) },
+    ],
+  },
+  extend_btn: {
+    description: "延伸视频按钮（keyboard_double_arrow_right 图标）",
+    used_by: ["findExtendButton", "extendVideo"],
+    strategies: [
+      { type: "combo", fn: () => Array.from(document.querySelectorAll('button'))
+          .find(b => b.textContent.toLowerCase().includes('extend')) },
+    ],
+  },
+  video_card_links: {
+    description: "视频卡片链接（非参考图卡）",
+    used_by: ["getAllVideoCards", "clickVideoCardByUuid"],
+    strategies: [
+      { type: "combo", fn: () => Array.from(document.querySelectorAll('a[href*="/edit/"]'))
+          .filter(a => a.parentElement?.querySelectorAll('button').length > 0) },
+    ],
+    returnsArray: true,
+  },
+  model_selector_btn: {
+    description: "模型选择按钮（Veo 3.1 - Fast dropdown）",
+    used_by: ["ensureModelSelection"],
+    strategies: [
+      { type: "combo", fn: () => Array.from(document.querySelectorAll('button'))
+          .find(b => { const t = b.textContent || ''; return (t.includes('Veo') || t.includes('Nano')) && t.includes('arrow_drop_down'); }) },
+    ],
+  },
+  history_steps: {
+    description: "编辑页的 history-step（判断是否已延伸）",
+    used_by: ["checkVideoExtendedFromDOM"],
+    strategies: [
+      { type: "css", selector: '[id^="history-step-"]' },
+    ],
+    returnsArray: true,
+  },
+});
+
+function findByRules(key) {
+  const rule = SELECTOR_RULES[key];
+  if (!rule) return { element: null, strategyIndex: -1, error: `unknown key: ${key}` };
+  for (let i = 0; i < rule.strategies.length; i++) {
+    const s = rule.strategies[i];
+    let el = null;
+    try {
+      if (s.type === 'css') {
+        el = rule.returnsArray
+          ? Array.from(document.querySelectorAll(s.selector))
+          : document.querySelector(s.selector);
+      } else if (s.type === 'text') {
+        const nodes = Array.from(document.querySelectorAll(s.tag || 'button'));
+        el = nodes.find(n => {
+          if (s.excludeDisabled && (n.disabled || n.getAttribute('aria-disabled') === 'true')) return false;
+          const t = n.textContent || '';
+          if (s.exact) return t.trim() === s.exact;
+          if (s.contains) return t.includes(s.contains);
+          return false;
+        });
+      } else if (s.type === 'combo' && typeof s.fn === 'function') {
+        el = s.fn();
+      }
+    } catch (e) {
+      el = null;
+    }
+    const hit = rule.returnsArray ? (Array.isArray(el) && el.length > 0) : !!el;
+    if (hit) {
+      return { element: el, strategyIndex: i, strategyUsed: s.type };
+    }
+  }
+  return { element: null, strategyIndex: -1 };
+}
+
+async function runHealthCheck() {
+  const details = [];
+  let passed = 0, fallback = 0, failed = 0;
+  for (const key of Object.keys(SELECTOR_RULES)) {
+    const res = findByRules(key);
+    const rule = SELECTOR_RULES[key];
+    let status, elementTag = null, elementText = null, count = null;
+    if (res.strategyIndex < 0) {
+      status = 'fail'; failed++;
+    } else if (res.strategyIndex === 0) {
+      status = 'ok'; passed++;
+    } else {
+      status = 'fallback'; fallback++;
+    }
+    if (res.element) {
+      if (rule.returnsArray) {
+        count = res.element.length;
+        const first = res.element[0];
+        if (first) {
+          elementTag = first.tagName;
+          elementText = (first.textContent || '').trim().slice(0, 80);
+        }
+      } else {
+        elementTag = res.element.tagName;
+        elementText = (res.element.textContent || '').trim().slice(0, 80);
+      }
+    }
+    details.push({
+      key,
+      status,
+      strategyIndex: res.strategyIndex,
+      strategyUsed: res.strategyUsed || null,
+      strategyCount: rule.strategies.length,
+      elementTag,
+      elementText,
+      count,
+      description: rule.description,
+      usedBy: rule.used_by,
+    });
+  }
+  return {
+    version: "m2-2026-04-06",
+    total: details.length,
+    passed,
+    fallback,
+    failed,
+    ok: failed === 0,
+    details,
+  };
+}
+
+window.__i2v_health = Object.freeze({
+  SELECTOR_RULES,
+  findByRules,
+  runHealthCheck,
+  __version: "m2-2026-04-06",
+});
+console.log("[i2v] window.__i2v_health exported, rules:", Object.keys(SELECTOR_RULES).length);
