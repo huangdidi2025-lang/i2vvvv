@@ -2,6 +2,179 @@
 // i2v-cli entry point
 import { listTabs, findFlowTab, attach, evaluate, installMockFetch } from '../lib/cdp.js';
 import CDP from 'chrome-remote-interface';
+import { spawn } from 'node:child_process';
+import { existsSync, statSync, mkdirSync } from 'node:fs';
+import { resolve, dirname, basename, extname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const __dirname_cli = dirname(fileURLToPath(import.meta.url));
+
+function findWatermarkTool() {
+  const candidates = [
+    resolve(__dirname_cli, 'GeminiWatermarkTool-Video.exe'),
+    resolve(__dirname_cli, '..', 'bin', 'GeminiWatermarkTool-Video.exe'),
+  ];
+  for (const p of candidates) {
+    if (existsSync(p)) return p;
+  }
+  return null;
+}
+
+async function cmdClean(args) {
+  const [, inputArg, ...rest] = args._;
+  if (!inputArg) {
+    console.error('Usage: i2v-cli clean <input.mp4 | input-dir> [-o output] [--threshold N] [--verbose]');
+    console.error('');
+    console.error('Examples:');
+    console.error('  i2v-cli clean video.mp4');
+    console.error('  i2v-cli clean ./Downloads/i2v/raw');
+    console.error('  i2v-cli clean ./video.mp4 -o ./cleaned.mp4');
+    process.exit(1);
+  }
+
+  let output = null;
+  let threshold = '0.25';
+  let verbose = false;
+  let force = false;
+  for (let i = 0; i < rest.length; i++) {
+    if ((rest[i] === '-o' || rest[i] === '--output') && rest[i + 1]) { output = rest[++i]; }
+    else if (rest[i] === '--threshold' && rest[i + 1]) { threshold = rest[++i]; }
+    else if (rest[i] === '--verbose' || rest[i] === '-v') { verbose = true; }
+    else if (rest[i] === '--force' || rest[i] === '-f') { force = true; }
+  }
+
+  const input = resolve(inputArg);
+  if (!existsSync(input)) {
+    console.error(`[clean] input not found: ${input}`);
+    process.exit(2);
+  }
+
+  const tool = findWatermarkTool();
+  if (!tool) {
+    console.error('[clean] GeminiWatermarkTool-Video.exe not found in i2v-cli/bin/');
+    console.error('[clean] Download from: https://github.com/allenk/VeoWatermarkRemover/releases');
+    process.exit(3);
+  }
+
+  const inputStat = statSync(input);
+  const isDir = inputStat.isDirectory();
+
+  if (!output) {
+    if (isDir) {
+      output = input + '_cleaned';
+    } else {
+      const ext = extname(input);
+      const base = basename(input, ext);
+      output = join(dirname(input), base + '_cleaned' + ext);
+    }
+  }
+  output = resolve(output);
+
+  if (isDir && !existsSync(output)) mkdirSync(output, { recursive: true });
+
+  // 工具的 --veo 模式不接受目录输入；目录情况下我们自己枚举 mp4/mov/mkv/avi/webm 逐个调
+  const fs = await import('node:fs');
+  const VIDEO_EXT = /\.(mp4|mov|mkv|avi|webm)$/i;
+  const fileList = isDir
+    ? fs.readdirSync(input).filter(f => VIDEO_EXT.test(f)).map(f => ({ in: join(input, f), out: join(output, f) }))
+    : [{ in: input, out: output }];
+
+  if (!fileList.length) {
+    console.error(`[clean] no video files found in ${input}`);
+    process.exit(6);
+  }
+
+  console.error(`[clean] tool: ${tool}`);
+  console.error(`[clean] ${fileList.length} file(s) to process`);
+
+  let okCount = 0, failCount = 0;
+  for (let i = 0; i < fileList.length; i++) {
+    const { in: src, out: dst } = fileList[i];
+    console.error(`[clean] [${i + 1}/${fileList.length}] ${basename(src)}`);
+    const toolArgs = [
+      '--no-banner',
+      '--veo',
+      '-i', src,
+      '-o', dst,
+      '-t', threshold,
+      '--region', 'br:auto',
+    ];
+    if (verbose) toolArgs.push('-v');
+    else toolArgs.push('-q');
+    if (force) toolArgs.push('-f');
+
+    const code = await new Promise((resolveP) => {
+      const child = spawn(tool, toolArgs, { stdio: ['ignore', 'inherit', 'inherit'] });
+      child.on('error', (e) => { console.error('[clean] spawn failed: ' + e.message); resolveP(127); });
+      child.on('exit', (c) => resolveP(c ?? 0));
+    });
+    if (code === 0) okCount++;
+    else { failCount++; console.error(`[clean] file exited with code ${code}`); }
+  }
+  console.error(`[clean] done — ok ${okCount} / fail ${failCount} -> ${output}`);
+  if (failCount && !okCount) process.exit(5);
+}
+
+async function cmdDownloadAndClean(args) {
+  // Trigger sidepanel batch download via CDP, wait for files to land, then run clean.
+  const os = await import('node:os');
+  const fs = await import('node:fs');
+  const dateStr = new Date().toISOString().slice(0, 10);
+  const downloadsDir = join(os.homedir(), 'Downloads', 'i2v', 'raw', dateStr);
+  console.error(`[d&c] target dir: ${downloadsDir}`);
+
+  // 1. Find sidepanel tab
+  const tabs = await CDP.List({ port: args.port });
+  const sp = tabs.find(t => (t.url || '').includes('sidepanel.html'));
+  if (!sp) { console.error('[d&c] sidepanel tab not open — open i2v sidebar first'); process.exit(1); }
+  const c = await CDP({ target: sp.webSocketDebuggerUrl });
+  await c.Runtime.enable();
+
+  // 2. Inspect rows to know how many we expect
+  const inspect = await c.Runtime.evaluate({
+    expression: `(async()=>{const d=await chrome.storage.local.get('i2v_rows');const rows=(d.i2v_rows||[]).filter(r=>r.status==='done'&&r.generated_video);return rows.length})()`,
+    awaitPromise: true, returnByValue: true,
+  });
+  const expected = inspect.result.value || 0;
+  if (!expected) { console.error('[d&c] no done rows with video to download'); await c.close(); process.exit(2); }
+  console.error(`[d&c] expecting ${expected} videos`);
+
+  // 3. Trigger select-all + startBatchDownload in sidepanel
+  const trig = await c.Runtime.evaluate({
+    expression: `(async()=>{
+      if(typeof toggleSelectAll!=='function'||typeof startBatchDownload!=='function')return {error:'sidepanel functions missing — reload sidebar'};
+      toggleSelectAll(true);
+      startBatchDownload(); // fire-and-forget
+      return {ok:true};
+    })()`,
+    awaitPromise: true, returnByValue: true,
+  });
+  await c.close();
+  if (trig.result.value?.error) { console.error('[d&c] ' + trig.result.value.error); process.exit(3); }
+  console.error('[d&c] triggered batch download, polling for completion...');
+
+  // 4. Poll downloadsDir for expected file count (timeout 5min)
+  const deadline = Date.now() + 5 * 60 * 1000;
+  let lastCount = -1;
+  while (Date.now() < deadline) {
+    await new Promise(r => setTimeout(r, 3000));
+    if (!existsSync(downloadsDir)) continue;
+    const files = fs.readdirSync(downloadsDir).filter(f => f.endsWith('.mp4') && !f.endsWith('.crdownload'));
+    if (files.length !== lastCount) {
+      console.error(`[d&c] ${files.length}/${expected} downloaded`);
+      lastCount = files.length;
+    }
+    if (files.length >= expected) break;
+  }
+  if (lastCount < expected) {
+    console.error(`[d&c] timeout: only ${lastCount}/${expected} arrived — proceeding anyway`);
+  }
+
+  // 5. Run clean on the directory
+  console.error('[d&c] starting watermark removal...');
+  await cmdClean({ _: ['clean', downloadsDir], port: args.port });
+  console.error(`[d&c] all done -> ${downloadsDir}_cleaned`);
+}
 
 const USAGE = `
 i2v-cli — CDP driver for i2v_extension
@@ -14,6 +187,8 @@ Usage:
   i2v-cli call <fn> [args...]  Call window.__i2v.<fn>(...args) in the isolated world
   i2v-cli reload               Reload the i2v extension and refresh Flow tab
   i2v-cli test <module>        Run a scripted scenario for a single module
+  i2v-cli clean <input>        Remove Veo watermark via local GeminiWatermarkTool
+  i2v-cli download-clean       Trigger sidepanel batch download then auto-clean
 
 Options:
   --port <n>                   CDP port (default 9222)
@@ -487,6 +662,12 @@ async function main() {
         break;
       case 'test':
         await cmdTest(args);
+        break;
+      case 'clean':
+        await cmdClean(args);
+        break;
+      case 'download-clean':
+        await cmdDownloadAndClean(args);
         break;
       default:
         console.error(`Unknown command: ${cmd}`);
