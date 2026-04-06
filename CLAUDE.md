@@ -1,5 +1,9 @@
 # I2V 图生视频 — 开发上下文
 
+> **🤖 Claude：调试或扩展这个工具前，先读 [docs/i2v-debug-workflow.md](docs/i2v-debug-workflow.md)。**
+> 那份文档说明了如何用 `i2v-cli` 通过 CDP 直接驱动 Flow 页面进行调试，以及绝对不能碰的红线。
+> 不要盲写代码再让用户跑——你有 CDP 工具箱可以直接看页面、调函数、跑测试。
+
 ## 项目概述
 
 I2V（Image-to-Video）是一套产品图自动生成营销短视频的独立工具，基于 Google Flow (Veo) 视频生成平台，由 **Chrome 扩展 + Vercel 后端 + Firebase 数据库** 构成，面向终端用户分发。
