@@ -210,24 +210,28 @@ async function cmdHealth(args) {
 }
 
 function printHealthReport(r) {
-  const okIcon = '[OK]';
-  const warnIcon = '[WARN]';
-  const failIcon = '[FAIL]';
-  console.log(`[i2v health] version ${r.version}`);
-  console.log(`${r.passed} ok  |  ${r.fallback} fallback  |  ${r.failed} failed  (total ${r.total})`);
+  const icons = { ok: '[OK]  ', fallback: '[WARN]', fail: '[FAIL]', skipped: '[SKIP]' };
+  console.log(`[i2v health] version ${r.version}  pageKind=${r.pageKind || 'unknown'}`);
+  const skippedNote = r.skipped ? `  |  ${r.skipped} skipped` : '';
+  console.log(`${r.passed} ok  |  ${r.fallback} fallback  |  ${r.failed} failed${skippedNote}  (total ${r.total})`);
   console.log('');
   for (const d of r.details) {
-    const icon = d.status === 'ok' ? okIcon : d.status === 'fallback' ? warnIcon : failIcon;
-    const strat = d.strategyIndex < 0
-      ? `all ${d.strategyCount} strategies miss`
-      : `strategy ${d.strategyIndex}/${d.strategyCount - 1}`;
+    const icon = icons[d.status] || '[?]';
+    let strat;
+    if (d.status === 'skipped') {
+      strat = d.skipReason || 'skipped';
+    } else if (d.strategyIndex < 0) {
+      strat = `all ${d.strategyCount} strategies miss`;
+    } else {
+      strat = `strategy ${d.strategyIndex}/${d.strategyCount - 1}`;
+    }
     const elDesc = d.count != null
       ? `(${d.count} matches)`
       : d.elementTag
         ? `${d.elementTag} "${(d.elementText || '').slice(0, 50)}"`
-        : '(no element)';
+        : d.status === 'skipped' ? '' : '(no element)';
     console.log(`${icon} ${d.key.padEnd(24)} [${strat}]  ${elDesc}`);
-    if (d.status !== 'ok') {
+    if (d.status === 'fail' || d.status === 'fallback') {
       console.log(`     description: ${d.description}`);
       console.log(`     used by: ${d.usedBy.join(', ')}`);
     }
@@ -238,7 +242,7 @@ function printHealthReport(r) {
   } else if (r.fallback > 0) {
     console.log(`NOTE: ${r.fallback} selector(s) using fallback strategy — primary strategy may be stale.`);
   } else {
-    console.log('All selectors on primary strategy. Flow UI matches expectations.');
+    console.log('All applicable selectors on primary strategy. Flow UI matches expectations.');
   }
 }
 

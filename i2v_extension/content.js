@@ -1218,12 +1218,17 @@ try {
 // ═══════════════════════════════════════════════════════════════════════════
 const SELECTOR_RULES = Object.freeze({
   open_upload_dialog_btn: {
-    description: "底部输入栏旁的 + 按钮，打开上传对话框",
+    description: "底部输入栏旁的 + 按钮，打开上传对话框（仅 project 页）",
     used_by: ["findOpenDialogBtn", "processRow step 1"],
+    only_on: "project_page", // not edit page — edit page has an "info" dialog popup that false-matches
     strategies: [
-      { type: "css", selector: 'button[aria-haspopup="dialog"]' },
+      // Tighten: must contain add/create text, not just any haspopup=dialog
+      // (edit page's "info" button also has aria-haspopup=dialog and would
+      // false-positive otherwise — discovered 2026-04-06 in M2 live demo)
+      { type: "combo", fn: () => Array.from(document.querySelectorAll('button[aria-haspopup="dialog"]'))
+          .find(b => { const t = (b.textContent || '').toLowerCase(); return (t.includes('add') || t.includes('create')) && !t.includes('info') && !t.includes('add media'); }) },
       { type: "combo", fn: () => Array.from(document.querySelectorAll('button[aria-haspopup]'))
-          .find(b => { const t = b.textContent.toLowerCase(); return (t.includes('add') || t.includes('create')) && !t.includes('add media'); }) },
+          .find(b => { const t = (b.textContent || '').toLowerCase(); return (t.includes('add') || t.includes('create')) && !t.includes('info') && !t.includes('add media'); }) },
     ],
   },
   dialog: {
@@ -1242,12 +1247,18 @@ const SELECTOR_RULES = Object.freeze({
     ],
   },
   prompt_textbox: {
-    description: "主提示词输入框（Lexical contenteditable）",
+    description: "主提示词输入框（Lexical contenteditable, project 页 + edit 页）",
     used_by: ["findTextbox", "processRow step 3"],
     strategies: [
+      // Project page placeholder
       { type: "combo", fn: () => {
         const all = Array.from(document.querySelectorAll('[role="textbox"]'));
         return all.find(tb => tb.getAttribute('aria-label') !== 'Editable text' && tb.textContent.includes('What do you want to create?'));
+      }},
+      // Edit page placeholder (discovered 2026-04-06: edit page uses "change" not "create")
+      { type: "combo", fn: () => {
+        const all = Array.from(document.querySelectorAll('[role="textbox"]'));
+        return all.find(tb => tb.getAttribute('aria-label') !== 'Editable text' && tb.textContent.includes('What do you want to change?'));
       }},
       { type: "combo", fn: () => {
         const all = Array.from(document.querySelectorAll('[role="textbox"]'));
@@ -1288,6 +1299,7 @@ const SELECTOR_RULES = Object.freeze({
   extend_btn: {
     description: "延伸视频按钮（keyboard_double_arrow_right 图标）",
     used_by: ["findExtendButton", "extendVideo"],
+    only_on: "video_edit_page", // does not exist on project page or on image-edit (failed-card) edit page
     strategies: [
       { type: "combo", fn: () => Array.from(document.querySelectorAll('button'))
           .find(b => b.textContent.toLowerCase().includes('extend')) },
@@ -1308,11 +1320,16 @@ const SELECTOR_RULES = Object.freeze({
     returnsArray: true,
   },
   model_selector_btn: {
-    description: "模型选择按钮（Veo 3.1 - Fast dropdown）",
+    description: "模型选择按钮（Veo / Nano dropdown）",
     used_by: ["ensureModelSelection"],
+    only_on: "edit_page_with_dropdown", // image-edit pages without dropdown won't have it
     strategies: [
+      // Strategy 0: classic Veo/Nano + arrow_drop_down
       { type: "combo", fn: () => Array.from(document.querySelectorAll('button'))
           .find(b => { const t = b.textContent || ''; return (t.includes('Veo') || t.includes('Nano')) && t.includes('arrow_drop_down'); }) },
+      // Strategy 1 (2026-04): image edit pages may show "🍌 Nano Banana Pro" without arrow_drop_down
+      { type: "combo", fn: () => Array.from(document.querySelectorAll('button'))
+          .find(b => { const t = b.textContent || ''; return /Nano Banana|Veo/.test(t); }) },
     ],
   },
   history_steps: {
@@ -1359,12 +1376,58 @@ function findByRules(key) {
   return { element: null, strategyIndex: -1 };
 }
 
+// Detect current page kind so health check can skip rules that don't apply.
+// Returns one of: 'project_page', 'video_edit_page', 'image_edit_page', 'unknown'.
+function detectPageKind() {
+  const path = location.pathname || '';
+  if (/\/project\/[^/]+\/edit\//.test(path)) {
+    // Inside an edit page. Distinguish video vs image by presence of
+    // history-step elements or a video element.
+    if (document.querySelector('[id^="history-step-"]')) return 'video_edit_page';
+    if (document.querySelector('video')) return 'video_edit_page';
+    // Image-edit pages typically show crop/draw buttons and Nano Banana model
+    const btns = Array.from(document.querySelectorAll('button')).map(b => b.textContent || '');
+    if (btns.some(t => /Nano Banana|Crop|Draw/.test(t))) return 'image_edit_page';
+    return 'unknown';
+  }
+  if (/\/project\/[^/]+/.test(path)) return 'project_page';
+  return 'unknown';
+}
+
+function ruleApplies(rule, pageKind) {
+  if (!rule.only_on) return true;
+  if (rule.only_on === pageKind) return true;
+  // edit_page_with_dropdown is a soft constraint — applies to both video and image edit
+  if (rule.only_on === 'edit_page_with_dropdown' && /edit_page$/.test(pageKind)) return true;
+  return false;
+}
+
 async function runHealthCheck() {
   const details = [];
-  let passed = 0, fallback = 0, failed = 0;
+  let passed = 0, fallback = 0, failed = 0, skipped = 0;
+  const pageKind = detectPageKind();
   for (const key of Object.keys(SELECTOR_RULES)) {
-    const res = findByRules(key);
     const rule = SELECTOR_RULES[key];
+    // If the rule explicitly doesn't apply to this page kind, skip rather
+    // than fail — failure should mean "I expected this to work but it didn't".
+    if (!ruleApplies(rule, pageKind)) {
+      details.push({
+        key,
+        status: 'skipped',
+        strategyIndex: -1,
+        strategyUsed: null,
+        strategyCount: rule.strategies.length,
+        elementTag: null,
+        elementText: null,
+        count: null,
+        description: rule.description,
+        usedBy: rule.used_by,
+        skipReason: `only_on=${rule.only_on}, current=${pageKind}`,
+      });
+      skipped++;
+      continue;
+    }
+    const res = findByRules(key);
     let status, elementTag = null, elementText = null, count = null;
     if (res.strategyIndex < 0) {
       status = 'fail'; failed++;
@@ -1401,10 +1464,12 @@ async function runHealthCheck() {
   }
   return {
     version: "m2-2026-04-06",
+    pageKind,
     total: details.length,
     passed,
     fallback,
     failed,
+    skipped,
     ok: failed === 0,
     details,
   };
