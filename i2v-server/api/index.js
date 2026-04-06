@@ -59,6 +59,8 @@ module.exports = async (req, res) => {
     if (path === '/api/revoke') return res.json(await handleRevoke(body));
     if (path === '/api/admin/users') return res.json(await handleAdminUsers(url.searchParams.get('admin_key')));
     if (path === '/api/admin/create-license') return res.json(await handleCreateLicense(body));
+    if (path === '/api/admin/delete-license') return res.json(await handleDeleteLicense(body));
+    if (path === '/api/admin/list-licenses') return res.json(await handleListLicenses(url.searchParams.get('admin_key')));
     if (path === '/api/admin/user-rows') return res.json(await handleAdminUserRows(url.searchParams.get('admin_key'), url.searchParams.get('device_id')));
 
     return res.status(404).json({ error: 'Not found' });
@@ -359,6 +361,24 @@ async function handleCreateLicense({ code, admin_key }) {
     bound_device_id: '',
   });
   return { ok: true, code };
+}
+
+async function handleDeleteLicense({ code, admin_key }) {
+  if (admin_key !== process.env.ADMIN_KEY) return { error: '权限不足' };
+  if (!code) return { error: '缺少许可码' };
+  const db = getDb();
+  await db.collection('licenses').doc(code).delete();
+  return { ok: true, message: `许可码 ${code} 已删除` };
+}
+
+async function handleListLicenses(adminKey) {
+  if (adminKey !== process.env.ADMIN_KEY) return { error: '权限不足' };
+  const db = getDb();
+  const snap = await db.collection('licenses').get();
+  const licenses = [];
+  snap.forEach(doc => licenses.push({ id: doc.id, ...doc.data() }));
+  licenses.sort((a, b) => (b.created_at || '').localeCompare(a.created_at || ''));
+  return { ok: true, licenses };
 }
 
 async function handleAdminUsers(adminKey) {

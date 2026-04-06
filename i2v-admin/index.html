@@ -110,7 +110,7 @@ td img.thumb { width: 44px; height: 44px; object-fit: cover; border-radius: 4px;
 <div class="tabs">
   <button class="tab active" data-tab="overview" onclick="switchTab('overview')">总览</button>
   <button class="tab" data-tab="users" onclick="switchTab('users')">用户</button>
-  <button class="tab" data-tab="licenses" onclick="switchTab('licenses')">许可码</button>
+  <button class="tab" data-tab="licenses" onclick="switchTab('licenses'); loadLicenses();">许可码</button>
   <button class="tab" data-tab="detail" onclick="switchTab('detail')" id="tab-detail" style="display:none">用户详情</button>
 </div>
 
@@ -148,6 +148,15 @@ td img.thumb { width: 44px; height: 44px; object-fit: cover; border-radius: 4px;
         <button class="btn" onclick="createLicense()">生成</button>
       </div>
       <div id="license-msg" style="font-size:12px;margin-top:8px"></div>
+    </div>
+    <div class="card">
+      <h3>全部许可码 <span id="lic-total" style="color:var(--txt3);font-weight:400"></span> <button class="btn btn-sm btn-outline" onclick="loadLicenses()">刷新</button></h3>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>许可码</th><th>状态</th><th>绑定设备</th><th>创建时间</th><th>操作</th></tr></thead>
+          <tbody id="lic-rows"><tr><td colspan="5" class="empty">点刷新加载</td></tr></tbody>
+        </table>
+      </div>
     </div>
   </div>
 
@@ -335,10 +344,39 @@ async function createLicense() {
     msg.style.color = 'var(--green)';
     msg.textContent = '已创建: ' + d.code;
     document.getElementById('new-code').value = '';
+    loadLicenses();
   } else {
     msg.style.color = 'var(--red)';
     msg.textContent = d.error || '失败';
   }
+}
+
+async function loadLicenses() {
+  const tbody = document.getElementById('lic-rows');
+  tbody.innerHTML = '<tr><td colspan="5" class="loading">加载中...</td></tr>';
+  const d = await api('/api/admin/list-licenses');
+  if (!d.ok) { tbody.innerHTML = `<tr><td colspan="5" class="empty">${esc(d.error || '加载失败')}</td></tr>`; return; }
+  const list = d.licenses || [];
+  document.getElementById('lic-total').textContent = `(${list.length})`;
+  if (!list.length) { tbody.innerHTML = '<tr><td colspan="5" class="empty">暂无许可码</td></tr>'; return; }
+  tbody.innerHTML = list.map(l => {
+    const active = l.active !== false;
+    const badge = active ? '<span class="badge badge-done">启用</span>' : '<span class="badge badge-error">停用</span>';
+    return `<tr>
+      <td style="font-family:monospace;color:var(--accent)">${esc(l.code || l.id)}</td>
+      <td>${badge}</td>
+      <td style="font-size:11px;color:var(--txt3);word-break:break-all">${esc(l.bound_device_id || '-')}</td>
+      <td style="font-size:11px;color:var(--txt3);white-space:nowrap">${fmtTime(l.created_at)}</td>
+      <td><button class="btn btn-sm btn-danger" onclick="deleteLicense('${esc(l.code || l.id)}')">删除</button></td>
+    </tr>`;
+  }).join('');
+}
+
+async function deleteLicense(code) {
+  if (!confirm(`确定删除许可码 ${code}？此操作不可恢复。`)) return;
+  const d = await api('/api/admin/delete-license', { code });
+  if (d.ok) loadLicenses();
+  else alert(d.error || '删除失败');
 }
 
 // ── 弹窗 ──────────────────────
