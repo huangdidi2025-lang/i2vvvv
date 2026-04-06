@@ -1294,11 +1294,16 @@ const SELECTOR_RULES = Object.freeze({
     ],
   },
   video_card_links: {
-    description: "视频卡片链接（非参考图卡）",
+    description: "视频卡片链接（含成功+失败状态，不含参考图卡）",
     used_by: ["getAllVideoCards", "clickVideoCardByUuid"],
     strategies: [
+      // Strategy 0 (legacy): parent has play button. Misses failed-state cards.
       { type: "combo", fn: () => Array.from(document.querySelectorAll('a[href*="/edit/"]'))
           .filter(a => a.parentElement?.querySelectorAll('button').length > 0) },
+      // Strategy 1 (2026-04 Flow update): all /edit/ anchors are video cards.
+      // In current Flow UI failed cards have no play button, but reference
+      // image cards do not use the /edit/ URL pattern at all.
+      { type: "css", selector: 'a[href*="/edit/"]' },
     ],
     returnsArray: true,
   },
