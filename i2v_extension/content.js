@@ -1488,3 +1488,139 @@ window.__i2v_health = Object.freeze({
   __version: "m2-2026-04-06",
 });
 console.log("[i2v] window.__i2v_health exported, rules:", Object.keys(SELECTOR_RULES).length);
+
+
+// ═══════════════════════════════════════════════════════════════════════════
+// M3：逻辑模块命名空间
+// 2026-04-06 为 M3 追加。把现有函数包装成面向任务的模块组，让 i2v-cli 可以
+// 单独驱动某一个关注点，而不需要走 background.js 的完整批处理流水线。
+// 纯封装——零新行为。
+//
+// M1 的 window.__i2v 已经 frozen，所以这个挂在另一个全局上。生产代码
+// （background.js / popup.js）完全不引用这个命名空间；它只为开发工具存在。
+// ═══════════════════════════════════════════════════════════════════════════
+window.__i2v_modules = Object.freeze({
+  upload: Object.freeze({
+    async openDialog() {
+      const btn = findOpenDialogBtn();
+      if (!btn) return { ok: false, error: 'no open dialog button' };
+      simulateClick(btn);
+      await sleep(800);
+      return { ok: !!findDialog() };
+    },
+    async clickUploadImage() {
+      const btn = findUploadBtnInDialog();
+      if (!btn) return { ok: false, error: 'no upload button in dialog' };
+      simulateClick(btn);
+      await sleep(500);
+      return { ok: true };
+    },
+    async injectFile(imageBytes, mime, filename) {
+      const inp = findFileInput();
+      if (!inp) return { ok: false, error: 'no file input' };
+      const blob = new Blob([new Uint8Array(imageBytes)], { type: mime });
+      const file = new File([blob], filename || 'product.jpg', { type: mime });
+      const dt = new DataTransfer();
+      dt.items.add(file);
+      inp.files = dt.files;
+      inp.dispatchEvent(new Event('change', { bubbles: true }));
+      return { ok: true, size: file.size };
+    },
+    async uploadFromBytes(imageBytes, mime, filename) {
+      const r1 = await this.openDialog(); if (!r1.ok) return r1;
+      const r2 = await this.clickUploadImage(); if (!r2.ok) return r2;
+      const r3 = await this.injectFile(imageBytes, mime, filename); if (!r3.ok) return r3;
+      await sleep(3000);
+      return { ok: true, dialogClosed: !findDialog() };
+    },
+  }),
+
+  prompt: Object.freeze({
+    async injectText(text) {
+      const tb = findTextbox();
+      if (!tb) return { ok: false, error: 'no textbox' };
+      tb.focus();
+      await sleep(200);
+      tb.dispatchEvent(new InputEvent('beforeinput', {
+        inputType: 'insertText',
+        data: text,
+        bubbles: true,
+        cancelable: true,
+      }));
+      await sleep(300);
+      return { ok: true, currentText: (tb.textContent || '').slice(0, 200) };
+    },
+    read() {
+      const tb = findTextbox();
+      if (!tb) return { ok: false, error: 'no textbox' };
+      return { ok: true, text: tb.textContent || '' };
+    },
+  }),
+
+  generate: Object.freeze({
+    async submit({ waitMs = 6000 } = {}) {
+      const start = Date.now();
+      let btn = null;
+      while (Date.now() - start < waitMs) {
+        btn = findGenerateBtn();
+        if (btn) break;
+        await sleep(300);
+      }
+      if (!btn) return { ok: false, error: 'generate button never enabled' };
+      simulateClick(btn);
+      return { ok: true, clickedText: btn.textContent.slice(0, 30) };
+    },
+    isReady() {
+      return { ok: true, ready: !!findGenerateBtn() };
+    },
+  }),
+
+  extend: Object.freeze({
+    async checkModel() {
+      return await ensureModelSelection();
+    },
+    async run(segment2Prompt) {
+      return await extendVideo(segment2Prompt);
+    },
+    async isExtended(uuid) {
+      return await checkVideoExtended(uuid);
+    },
+  }),
+
+  download: Object.freeze({
+    async getUrl() {
+      return await getVideoUrl();
+    },
+    async clickDownload() {
+      return await clickDownload();
+    },
+  }),
+
+  cache: Object.freeze({
+    async refresh() {
+      return await refreshProjectCache();
+    },
+    read() {
+      return getProjectDataFromCache();
+    },
+  }),
+
+  navigate: Object.freeze({
+    async toEdit(uuid) {
+      return await clickVideoCardByUuid(uuid);
+    },
+    back() {
+      return navigateBack();
+    },
+    listVideoCards() {
+      const cards = Array.from(document.querySelectorAll('a[href*="/edit/"]'));
+      return cards.map(a => a.href.split('/').pop());
+    },
+  }),
+
+  meta: Object.freeze({
+    __version: 'm3-2026-04-06',
+    __keys() { return Object.keys(window.__i2v_modules).sort(); },
+  }),
+});
+console.log('[i2v] window.__i2v_modules exported, modules:', Object.keys(window.__i2v_modules).length);
